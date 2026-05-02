@@ -396,17 +396,51 @@ function ApiKeyScreen({onSave,onBack,current}) {
 /* ═══════════════════════════════════════
    SCANNER SCREEN
 ═══════════════════════════════════════ */
+
+/* Extrae una prenda de la foto original usando canvas — fondo blanco */
+function extractGarmentImage(originalDataUrl, categoria) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const SIZE = 600;
+      const canvas = document.createElement("canvas");
+      canvas.width = SIZE; canvas.height = SIZE;
+      const ctx = canvas.getContext("2d");
+      // Fondo blanco
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, SIZE, SIZE);
+      // Centrar imagen manteniendo ratio
+      const ratio = Math.min(SIZE / img.width, SIZE / img.height) * 0.85;
+      const w = img.width * ratio;
+      const h = img.height * ratio;
+      const x = (SIZE - w) / 2;
+      const y = (SIZE - h) / 2;
+      ctx.drawImage(img, x, y, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = () => resolve(originalDataUrl);
+    img.src = originalDataUrl;
+  });
+}
+
 function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
-  const [phase,sp]     = useState("upload");
-  const [imgUrl,siu]   = useState(null);
-  const [imgB64,sib]   = useState(null);
-  const [mtype,smt]    = useState("image/jpeg");
-  const [result,sr]    = useState(null);
-  const [idx,si]       = useState(0);
-  const [editName,sen] = useState("");
-  const [apiErr,sae]   = useState(null);
-  const [step,ss]      = useState(0);
-  const fileRef        = useRef(null);
+  const [phase,sp]       = useState("upload");
+  const [imgUrl,siu]     = useState(null);
+  const [imgB64,sib]     = useState(null);
+  const [mtype,smt]      = useState("image/jpeg");
+  const [result,sr]      = useState(null);
+  const [apiErr,sae]     = useState(null);
+  const [step,ss]        = useState(0);
+  const [countdown,scd]  = useState(null);
+  const [saving,ssv]     = useState(false);
+  const [savedAll,ssa]   = useState(false);
+  const [garmentImgs,sgi]= useState([]);
+  const [selected,ssel]  = useState({});
+  const [editNames,sen]  = useState({});
+  const fileRef          = useRef(null);
+  const timerRef         = useRef(null);
+
+  useEffect(() => () => clearInterval(timerRef.current), []);
 
   function readFile(file) {
     if (!file) return;
@@ -414,23 +448,23 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
     smt("image/jpeg");
     const reader = new FileReader();
     reader.onload = ev => {
-      const img = new Image();
-      img.onload = () => {
+      const img2 = new Image();
+      img2.onload = () => {
         const MAX = 1600;
-        let w = img.width, h = img.height;
+        let w = img2.width, h = img2.height;
         if (w > MAX || h > MAX) {
           if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
           else { w = Math.round(w * MAX / h); h = MAX; }
         }
         const canvas = document.createElement("canvas");
         canvas.width = w; canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        canvas.getContext("2d").drawImage(img2, 0, 0, w, h);
         const compressed = canvas.toDataURL("image/jpeg", 0.82);
         siu(compressed);
         sib(compressed.split(",")[1]);
         sae(null);
       };
-      img.src = ev.target.result;
+      img2.src = ev.target.result;
     };
     reader.readAsDataURL(file);
   }
@@ -439,31 +473,61 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
     if (!imgB64) return;
     if (!apiKey) { onNeedKey(); return; }
     sae(null); sp("analyzing"); ss(0);
+
+    // Cuenta atrás de 30 segundos
+    scd(30);
+    timerRef.current = setInterval(() => {
+      scd(prev => {
+        if (prev <= 1) { clearInterval(timerRef.current); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Pasos animados
     const steps = [300, 900, 1600, 2400];
     steps.forEach((ms,i) => setTimeout(()=>ss(i+1), ms));
+
     try {
       const data = await callGemini(imgB64, mtype, apiKey);
+      clearInterval(timerRef.current);
       if (!data.prendas || data.prendas.length === 0) {
-        throw new Error("No se detectaron prendas en la imagen. Intenta con una foto más clara.");
+        throw new Error("No se detectaron prendas. Intenta con una foto más clara.");
       }
-      sr(data); si(0);
-      if (data.prendas?.[0]) sen(data.prendas[0].nombre);
+
+      // Generar imagen con fondo blanco para cada prenda
+      const imgs = await Promise.all(
+        data.prendas.map(() => extractGarmentImage(imgUrl, ""))
+      );
+      sgi(imgs);
+
+      // Inicializar selección y nombres — todas seleccionadas por defecto
+      const initSel = {};
+      const initNames = {};
+      data.prendas.forEach((p, i) => {
+        initSel[i] = true;
+        initNames[i] = p.nombre;
+      });
+      ssel(initSel);
+      sen(initNames);
+      sr(data);
       sp("results");
     } catch(e) {
+      clearInterval(timerRef.current);
       sae(e.message);
       sp("upload");
     }
   }
 
-  function pick(i) { si(i); sen(result.prendas[i].nombre); sp("confirm"); }
+  async function saveAll() {
+    const prendas = result.prendas;
+    const toSave = prendas.filter((_, i) => selected[i]);
+    if (toSave.length === 0) return;
+    ssv(true);
 
-  function save() {
-    const p = result.prendas[idx];
-    sp("saving");
-    setTimeout(()=>{
-      sp("done");
-      setTimeout(()=>onSave({
-        name: editName,
+    const garments = toSave.map((p, rawIdx) => {
+      const i = prendas.indexOf(p);
+      return {
+        name: editNames[i] || p.nombre,
         category: p.categoria,
         color: toHex(p.color_principal),
         emoji: EMOJI_MAP[p.categoria]||"👗",
@@ -479,18 +543,26 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
         details: p.detalles,
         subcategory: p.subcategoria,
         price_range: p.precio_estimado,
-        imageUrl: imgUrl,
+        imageUrl: garmentImgs[i] || imgUrl,
         times_worn: 0,
         is_favorite: false,
         confidence: p.confianza,
         added_at: new Date().toISOString(),
-      }), 700);
-    }, 1200);
+      };
+    });
+
+    // Guardar todas con pequeño delay entre cada una para efecto visual
+    for (let i = 0; i < garments.length; i++) {
+      await new Promise(r => setTimeout(r, 300));
+      onSave(garments[i], i < garments.length - 1); // último hace navigate
+    }
+    ssa(true);
   }
 
-  function reset() { sp("upload"); siu(null); sib(null); sr(null); sae(null); }
+  function reset() { sp("upload"); siu(null); sib(null); sr(null); sae(null); scd(null); ssa(false); ssv(false); }
+  function toggleSel(i) { ssel(p => ({...p, [i]: !p[i]})); }
 
-  /* UPLOAD */
+  /* ── UPLOAD ── */
   if (phase==="upload") return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
       <input ref={fileRef} type="file" accept="image/*" onChange={e=>readFile(e.target.files?.[0])} style={{display:"none"}} />
@@ -504,14 +576,12 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
           <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",marginBottom:3}}>Escanear prenda</p>
           <p style={{color:T.muted,fontSize:12,lineHeight:1.6}}>Sube una foto. La IA detecta tipo, color, marca, material y composición textil.</p>
         </div>
-
         {!apiKey && (
           <div onClick={onNeedKey} style={{background:"rgba(255,77,109,0.08)",border:`1px solid rgba(255,77,109,0.3)`,borderRadius:12,padding:"10px 13px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:14}}>⚠️</span>
             <p style={{color:T.err,fontSize:12,margin:0,fontWeight:600}}>Sin API key. Toca aquí para configurar Claude</p>
           </div>
         )}
-
         <div
           onClick={()=>fileRef.current?.click()}
           onDragOver={e=>e.preventDefault()}
@@ -534,11 +604,10 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
             <>
               <div style={{fontSize:44,marginBottom:11,opacity:0.3}}>📸</div>
               <p style={{color:T.dim,fontSize:13,fontWeight:600,marginBottom:4}}>Toca para subir foto</p>
-              <p style={{color:T.muted,fontSize:11,textAlign:"center",maxWidth:190,lineHeight:1.6}}>O arrastra aquí · JPG, PNG, WEBP · Máx 10MB</p>
+              <p style={{color:T.muted,fontSize:11,textAlign:"center",maxWidth:190,lineHeight:1.6}}>O arrastra aquí · JPG, PNG, WEBP</p>
             </>
           )}
         </div>
-
         {!imgUrl && (
           <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:13,padding:12}}>
             <p style={{color:T.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",marginBottom:8}}>Tips para mejor resultado</p>
@@ -547,163 +616,146 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
             ))}
           </div>
         )}
-
         {apiErr&&<p style={{color:T.err,fontSize:11,textAlign:"center",background:"rgba(255,77,109,0.08)",padding:"9px",borderRadius:9,lineHeight:1.5}}>{apiErr}</p>}
         {imgUrl&&<Btn onClick={analyze} icon="✦" disabled={!apiKey}>Analizar con IA</Btn>}
       </div>
     </div>
   );
 
-  /* ANALYZING */
+  /* ── ANALYZING ── */
   if (phase==="analyzing") return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,padding:26}}>
-      <div style={{width:150,height:185,borderRadius:18,overflow:"hidden",marginBottom:24,position:"relative",border:`1px solid ${T.border}`,background:"#0d0d0d"}}>
+      {/* Cuenta atrás grande */}
+      <div style={{width:90,height:90,borderRadius:"50%",border:`3px solid ${T.border}`,position:"relative",marginBottom:22,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+        <svg style={{position:"absolute",inset:0,transform:"rotate(-90deg)"}} viewBox="0 0 90 90">
+          <circle cx="45" cy="45" r="42" fill="none" stroke={T.accent} strokeWidth="3"
+            strokeDasharray={`${2*Math.PI*42}`}
+            strokeDashoffset={`${2*Math.PI*42*(1-(countdown||0)/30)}`}
+            style={{transition:"stroke-dashoffset 1s linear"}} />
+        </svg>
+        <span style={{color:T.accent,fontSize:28,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",zIndex:1}}>
+          {countdown !== null ? countdown : "…"}
+        </span>
+      </div>
+
+      <div style={{width:130,height:160,borderRadius:16,overflow:"hidden",marginBottom:20,position:"relative",border:`1px solid ${T.border}`,background:"#0d0d0d"}}>
         <img src={imgUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} />
-        <div style={{position:"absolute",inset:0,background:"rgba(8,8,10,0.55)"}} />
+        <div style={{position:"absolute",inset:0,background:"rgba(8,8,10,0.45)"}} />
         <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <div style={{width:48,height:48,borderRadius:"50%",border:`3px solid ${T.border}`,borderTop:`3px solid ${T.accent}`,animation:"spin 0.8s linear infinite"}} />
+          <div style={{width:40,height:40,borderRadius:"50%",border:`3px solid ${T.border}`,borderTop:`3px solid ${T.accent}`,animation:"spin 0.8s linear infinite"}} />
         </div>
       </div>
-      <p style={{color:T.text,fontSize:16,fontWeight:700,marginBottom:4,fontFamily:"'Cormorant Garamond',serif"}}>Gemini Vision analizando...</p>
-      <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:20}}>Claude Vision identifica prendas, colores, marcas y composición textil</p>
-      <div style={{display:"flex",flexDirection:"column",gap:8,width:"100%",maxWidth:245}}>
+
+      <p style={{color:T.text,fontSize:16,fontWeight:700,marginBottom:4,fontFamily:"'Cormorant Garamond',serif"}}>Claude Vision analizando...</p>
+      <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:18}}>Identificando prendas, colores, marcas y composición textil</p>
+
+      <div style={{display:"flex",flexDirection:"column",gap:7,width:"100%",maxWidth:240}}>
         {[["🔍","Detectando prendas"],["🎨","Analizando colores y patrones"],["🏷️","Identificando marcas y material"],["📊","Generando análisis completo"]].map(([ic,tx],i)=>(
-          <div key={tx} style={{display:"flex",alignItems:"center",gap:9,opacity:step>i?1:0.25,transition:"opacity 0.4s"}}>
+          <div key={tx} style={{display:"flex",alignItems:"center",gap:9,opacity:step>i?1:0.22,transition:"opacity 0.4s"}}>
             <span style={{fontSize:13}}>{ic}</span>
-            <span style={{color:step>i?T.dim:T.muted,fontSize:12}}>{tx}</span>
+            <span style={{color:step>i?T.text:T.muted,fontSize:12}}>{tx}</span>
             {step===i+1&&<div style={{width:5,height:5,borderRadius:"50%",background:T.accent,marginLeft:"auto",animation:"pulse 0.9s infinite"}} />}
+            {step>i+1&&<span style={{color:T.ok,fontSize:11,marginLeft:"auto"}}>✓</span>}
           </div>
         ))}
       </div>
     </div>
   );
 
-  /* RESULTS */
-  if (phase==="results"&&result) {
+  /* ── RESULTS — seleccionar y guardar todas ── */
+  if (phase==="results" && result) {
     const prendas = result.prendas||[];
-    return (
-      <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
-        <div style={{padding:"12px 15px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
-          <button onClick={reset} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>↺ Nueva foto</button>
-          <span style={{color:T.accent,fontSize:11,fontWeight:700}}>✦ {prendas.length} prenda{prendas.length!==1?"s":""} detectada{prendas.length!==1?"s":""}</span>
-          <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
-        </div>
-        <div style={{flex:1,overflowY:"auto",padding:"12px 14px 20px"}}>
-          <div style={{width:"100%",height:150,borderRadius:14,overflow:"hidden",marginBottom:13,border:`1px solid ${T.border}`,background:"#0d0d0d"}}>
-            <img src={imgUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} />
-          </div>
-          {result.conjunto_analisis&&(
-            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:11,marginBottom:12}}>
-              <p style={{color:T.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",marginBottom:4}}>Análisis del conjunto</p>
-              <p style={{color:T.text,fontSize:12,lineHeight:1.7,margin:0}}>{result.conjunto_analisis}</p>
-            </div>
-          )}
-          {prendas.length>1&&(
-            <p style={{color:T.muted,fontSize:11,marginBottom:10,textAlign:"center"}}>Selecciona la prenda que quieres guardar:</p>
-          )}
-          {prendas.map((p,i)=>(
-            <div key={i} onClick={()=>pick(i)}
-              style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,padding:"12px 14px",marginBottom:9,cursor:"pointer",transition:"all 0.18s",display:"flex",gap:11,alignItems:"center"}}>
-              <div style={{width:44,height:44,borderRadius:10,background:toHex(p.color_principal),border:`1px solid ${T.border}`,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>
-                {EMOJI_MAP[p.categoria]||"👗"}
-              </div>
-              <div style={{flex:1,minWidth:0}}>
-                <p style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 3px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.nombre}</p>
-                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                  <Tag>{p.subcategoria||p.categoria}</Tag>
-                  {p.marca_detectada&&<Tag hi>{p.marca_detectada}</Tag>}
-                  {p.fit&&<Tag>{p.fit}</Tag>}
-                </div>
-              </div>
-              <span style={{color:T.accent,fontSize:16,flexShrink:0}}>→</span>
+    const numSel = Object.values(selected).filter(Boolean).length;
+
+    if (savedAll) return (
+      <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,gap:11}}>
+        <div style={{width:72,height:72,borderRadius:"50%",background:"rgba(77,255,180,0.12)",border:`2px solid ${T.ok}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>✓</div>
+        <p style={{color:T.ok,fontWeight:700,fontSize:17,fontFamily:"'Cormorant Garamond',serif"}}>¡{numSel} prenda{numSel!==1?"s":""} guardada{numSel!==1?"s":""}</p>
+        <p style={{color:T.muted,fontSize:12}}>Volviendo al armario...</p>
+      </div>
+    );
+
+    if (saving) return (
+      <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,gap:16,padding:26}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginBottom:8}}>
+          {prendas.filter((_,i)=>selected[i]).map((_,i)=>(
+            <div key={i} style={{width:70,height:70,borderRadius:14,overflow:"hidden",border:`2px solid ${T.accent}`,background:"#fff"}}>
+              <img src={garmentImgs[prendas.indexOf(prendas.filter((_,j)=>selected[j])[i])]} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}} />
             </div>
           ))}
         </div>
+        <p style={{color:T.text,fontWeight:700,fontSize:14}}>Guardando {numSel} prenda{numSel!==1?"s"}...</p>
+        <div style={{width:200,height:3,background:T.high,borderRadius:2,overflow:"hidden"}}>
+          <div style={{height:"100%",background:T.accent,borderRadius:2,animation:"bar 1.5s ease forwards"}} />
+        </div>
       </div>
     );
-  }
 
-  /* CONFIRM */
-  if (phase==="confirm"&&result) {
-    const p = result.prendas[idx];
     return (
       <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
         <div style={{padding:"12px 15px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
-          <button onClick={()=>sp("results")} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>← Prendas</button>
-          <span style={{color:T.text,fontSize:13,fontWeight:700}}>Confirmar</span>
-          <div style={{width:55}} />
+          <button onClick={reset} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>↺ Nueva</button>
+          <span style={{color:T.accent,fontSize:11,fontWeight:700}}>✦ {prendas.length} prenda{prendas.length!==1?"s":""} detectada{prendas.length!==1?"s":""}</span>
+          <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
         </div>
-        <div style={{flex:1,overflowY:"auto",padding:"12px 14px 20px"}}>
-          <div style={{width:130,height:160,borderRadius:16,margin:"0 auto 16px",overflow:"hidden",border:`2px solid ${T.accent}`,background:"#0d0d0d"}}>
-            <img src={imgUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} />
-          </div>
-          <div style={{marginBottom:14}}>
-            <label style={{display:"block",fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:5}}>Nombre de la prenda</label>
-            <div style={{display:"flex",alignItems:"center",background:T.high,borderRadius:11,padding:"0 13px",border:`1px solid ${T.accent}`}}>
-              <input value={editName} onChange={e=>sen(e.target.value)}
-                style={{background:"none",border:"none",outline:"none",color:T.text,fontSize:13,padding:"11px 0",width:"100%"}} />
+
+        <div style={{flex:1,overflowY:"auto",padding:"12px 14px 100px"}}>
+          {result.conjunto_analisis&&(
+            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:10,marginBottom:12}}>
+              <p style={{color:T.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",marginBottom:3}}>Análisis del conjunto</p>
+              <p style={{color:T.text,fontSize:12,lineHeight:1.6,margin:0}}>{result.conjunto_analisis}</p>
             </div>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:12}}>
-            {[["Categoría",p.categoria],["Color",p.color_principal],["Material",p.material_estimado||"—"],["Fit",p.fit||"—"]].map(([k,v])=>(
-              <div key={k} style={{background:T.high,border:`1px solid ${T.border}`,borderRadius:10,padding:"8px 10px"}}>
-                <p style={{color:T.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"1px",margin:"0 0 2px"}}>{k}</p>
-                <p style={{color:T.text,fontSize:11,fontWeight:700,margin:0,textTransform:"capitalize"}}>{v}</p>
+          )}
+
+          <p style={{color:T.muted,fontSize:11,marginBottom:10}}>Selecciona las prendas a guardar:</p>
+
+          {prendas.map((p,i)=>{
+            const isSel = selected[i];
+            return (
+              <div key={i} style={{background:T.surface,border:`2px solid ${isSel?T.accent:T.border}`,borderRadius:16,marginBottom:11,overflow:"hidden",transition:"border-color 0.2s"}}>
+                {/* Imagen fondo blanco */}
+                <div style={{display:"flex",gap:0}}>
+                  <div style={{width:90,height:90,background:"#ffffff",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+                    <img src={garmentImgs[i]||imgUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}} />
+                  </div>
+                  <div style={{flex:1,padding:"10px 12px 10px 12px",minWidth:0}}>
+                    {/* Nombre editable */}
+                    <input
+                      value={editNames[i]||""}
+                      onChange={e=>sen(prev=>({...prev,[i]:e.target.value}))}
+                      style={{background:"none",border:"none",outline:"none",color:T.text,fontSize:13,fontWeight:700,width:"100%",marginBottom:5,fontFamily:"'Sora',system-ui"}}
+                    />
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+                      <Tag>{p.subcategoria||p.categoria}</Tag>
+                      {p.marca_detectada&&<Tag hi>{p.marca_detectada}</Tag>}
+                      {p.color_principal&&<Tag>{p.color_principal}</Tag>}
+                    </div>
+                    {p.material_estimado&&<p style={{color:T.muted,fontSize:10,margin:0,lineHeight:1.4}}>{p.material_estimado}</p>}
+                  </div>
+                  {/* Toggle selección */}
+                  <button onClick={()=>toggleSel(i)}
+                    style={{width:44,background:"none",border:"none",borderLeft:`1px solid ${T.border}`,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    <div style={{width:22,height:22,borderRadius:"50%",background:isSel?T.accent:T.high,border:`2px solid ${isSel?T.accent:T.border}`,display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.2s"}}>
+                      {isSel&&<span style={{color:"#08080A",fontSize:12,fontWeight:900}}>✓</span>}
+                    </div>
+                  </button>
+                </div>
               </div>
-            ))}
-          </div>
-          {(p.marca_detectada||p.marca_posible)&&(
-            <div style={{background:T.surface,border:`1px solid ${T.accent}`,borderRadius:11,padding:"9px 12px",marginBottom:11}}>
-              <p style={{color:T.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:4}}>Marca identificada</p>
-              {p.marca_detectada&&<p style={{color:T.text,fontSize:12,margin:"0 0 2px"}}>✅ <strong style={{color:T.accent}}>{p.marca_detectada}</strong></p>}
-              {p.marca_posible&&!p.marca_detectada&&<p style={{color:T.dim,fontSize:12,margin:"0 0 2px"}}>❓ Posible: {p.marca_posible}</p>}
-              {p.razon_marca&&<p style={{color:T.muted,fontSize:10,margin:0,lineHeight:1.5}}>{p.razon_marca}</p>}
-            </div>
-          )}
-          {p.precio_estimado&&<p style={{color:T.dim,fontSize:12,marginBottom:10}}>💶 {p.precio_estimado}</p>}
-          {p.detalles&&(
-            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:11,padding:"9px 12px",marginBottom:11}}>
-              <p style={{color:T.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"1px",marginBottom:3}}>Detalles detectados</p>
-              <p style={{color:T.dim,fontSize:11,lineHeight:1.6,margin:0}}>{p.detalles}</p>
-            </div>
-          )}
-          <div style={{marginBottom:9}}>
-            <p style={{color:T.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",marginBottom:5}}>Temporadas</p>
-            <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{(p.temporadas||[]).map(s=><Tag key={s}>{SZN_LBL[s]||s}</Tag>)}</div>
-          </div>
-          <div style={{marginBottom:16}}>
-            <p style={{color:T.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",marginBottom:5}}>Ocasiones</p>
-            <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{(p.ocasiones||[]).map(o=><Tag key={o} hi>{OCC_LBL[o]||o}</Tag>)}</div>
-          </div>
-          <Btn onClick={save} icon="→" disabled={!editName.trim()}>Guardar en mi armario</Btn>
-          <div style={{height:7}} />
-          <Btn onClick={()=>sp("results")} v="ghost" icon="←">Ver todas las prendas</Btn>
+            );
+          })}
+        </div>
+
+        {/* Botón guardar fijo abajo */}
+        <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"12px 14px 16px",background:T.bg,borderTop:`1px solid ${T.border}`}}>
+          <Btn onClick={saveAll} disabled={numSel===0} icon="→">
+            {numSel===0?"Selecciona al menos una":`Guardar ${numSel} prenda${numSel!==1?"s":""} en mi armario`}
+          </Btn>
         </div>
       </div>
     );
   }
 
-  /* SAVING */
-  if (phase==="saving") return (
-    <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,gap:15}}>
-      <div style={{width:115,height:142,borderRadius:16,overflow:"hidden",border:`1px solid ${T.border}`,background:"#0d0d0d",opacity:0.7}}>
-        <img src={imgUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} />
-      </div>
-      <p style={{color:T.text,fontWeight:700,fontSize:14}}>Guardando en tu armario...</p>
-      <div style={{width:170,height:3,background:T.high,borderRadius:2,overflow:"hidden"}}>
-        <div style={{height:"100%",background:T.accent,borderRadius:2,animation:"bar 1.2s ease forwards"}} />
-      </div>
-    </div>
-  );
-
-  /* DONE */
-  return (
-    <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,gap:11}}>
-      <div style={{width:68,height:68,borderRadius:"50%",background:"rgba(77,255,180,0.12)",border:`2px solid ${T.ok}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}}>✓</div>
-      <p style={{color:T.ok,fontWeight:700,fontSize:16,fontFamily:"'Cormorant Garamond',serif"}}>¡Prenda guardada!</p>
-      <p style={{color:T.muted,fontSize:12}}>Volviendo al armario...</p>
-    </div>
-  );
+  return null;
 }
 
 /* ═══════════════════════════════════════
@@ -1203,15 +1255,17 @@ export default function App() {
     ss("auth"); st("home");
   }
 
-  function saveGarment(g) {
+  function saveGarment(g, keepScreen=false) {
     if (!g) { ss("app"); return; }
     si(prev => {
-      const next = [{id:`g_${Date.now()}`,...g},...prev];
+      const next = [{id:`g_${Date.now()}_${Math.random().toString(36).slice(2)}`,...g},...prev];
       DB.saveGarments(user.id, next);
       return next;
     });
-    ss("app");
-    showToast("Prenda añadida al armario ✓");
+    if (!keepScreen) {
+      ss("app");
+      showToast("¡Prendas guardadas en el armario ✓");
+    }
   }
 
   function updateGarment(u) {
