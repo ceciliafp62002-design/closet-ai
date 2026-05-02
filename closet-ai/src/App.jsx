@@ -53,9 +53,17 @@ const AI_PROMPT = `You are a fashion expert and textile analyst with 20 years of
 
 Analyze the image and identify ALL visible garments. Be very specific for each garment.
 
+IMPORTANT: For each garment, estimate its bounding box as fractions of the total image size (0.0 to 1.0):
+- bbox_x: left edge (0=left, 1=right)
+- bbox_y: top edge (0=top, 1=bottom)  
+- bbox_w: width fraction
+- bbox_h: height fraction
+
+Be precise with bounding boxes — they will be used to crop each garment from the photo.
+
 Respond ONLY with pure JSON, no markdown, no code blocks, no extra text:
 
-{"prendas":[{"nombre":"descriptive name in Spanish","categoria":"top|bottom|dress|outerwear|shoes|bag|accessory","subcategoria":"exact type in Spanish","color_principal":"color in Spanish","colores":["c1","c2"],"marca_detectada":"brand visible in logo/embroidery/label or null","marca_posible":"probable brand by cut/design/details or null","razon_marca":"explanation of why you think it's that brand","material_estimado":"estimated textile composition with percentages if possible","patron":"solid|stripes|plaid|floral|geometric|animal_print|graphic|denim|knit","fit":"slim|regular|oversized|wide|fitted|cropped","temporadas":["spring","summer","autumn","winter","all_season"],"ocasiones":["casual","formal","business","sport","party","beach","home","outdoor"],"detalles":"description of unique details: stitching, buttons, pockets, finishes, estimated washing","estado_visible":"nuevo|excelente|bueno|usado","precio_estimado":"estimated price range in euros","confianza":0.95}],"conjunto_analisis":"analysis of the set if there are several garments","estilo_general":"casual|smart_casual|formal|sporty|bohemian|streetwear|elegante|otro"}`;
+{"prendas":[{"nombre":"descriptive name in Spanish","categoria":"top|bottom|dress|outerwear|shoes|bag|accessory","subcategoria":"exact type in Spanish","color_principal":"color in Spanish","colores":["c1","c2"],"marca_detectada":"brand visible in logo/embroidery/label or null","marca_posible":"probable brand by cut/design/details or null","razon_marca":"explanation of why you think it is that brand","material_estimado":"estimated textile composition with percentages if possible","patron":"solid|stripes|plaid|floral|geometric|animal_print|graphic|denim|knit","fit":"slim|regular|oversized|wide|fitted|cropped","temporadas":["spring","summer","autumn","winter","all_season"],"ocasiones":["casual","formal","business","sport","party","beach","home","outdoor"],"detalles":"description of unique details: stitching, buttons, pockets, finishes, estimated washing","estado_visible":"nuevo|excelente|bueno|usado","precio_estimado":"estimated price range in euros","confianza":0.95,"bbox_x":0.1,"bbox_y":0.1,"bbox_w":0.8,"bbox_h":0.6}],"conjunto_analisis":"analysis of the set if there are several garments","estilo_general":"casual|smart_casual|formal|sporty|bohemian|streetwear|elegante|otro"}`;
 
 async function callGemini(b64, mtype, apiKey) {
   if (!apiKey) throw new Error("No hay API key configurada. Ve a ⚙️ Configuración.");
@@ -397,8 +405,13 @@ function ApiKeyScreen({onSave,onBack,current}) {
    SCANNER SCREEN
 ═══════════════════════════════════════ */
 
-/* Extrae una prenda de la foto original usando canvas — fondo blanco */
-function extractGarmentImage(originalDataUrl, categoria) {
+/* ─── IMAGEN FONDO BLANCO ───────────────
+   Opción B (1 prenda): foto entera centrada en fondo blanco con padding
+   Opción C (varias): recorta por bbox de Claude + fondo blanco + padding
+─────────────────────────────────────── */
+
+// Opción B: 1 prenda — foto completa sobre fondo blanco
+function garmentImageSingle(dataUrl) {
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
@@ -406,21 +419,80 @@ function extractGarmentImage(originalDataUrl, categoria) {
       const canvas = document.createElement("canvas");
       canvas.width = SIZE; canvas.height = SIZE;
       const ctx = canvas.getContext("2d");
-      // Fondo blanco
       ctx.fillStyle = "#FFFFFF";
       ctx.fillRect(0, 0, SIZE, SIZE);
-      // Centrar imagen manteniendo ratio
-      const ratio = Math.min(SIZE / img.width, SIZE / img.height) * 0.85;
+      const ratio = Math.min(SIZE / img.width, SIZE / img.height) * 0.82;
       const w = img.width * ratio;
       const h = img.height * ratio;
-      const x = (SIZE - w) / 2;
-      const y = (SIZE - h) / 2;
-      ctx.drawImage(img, x, y, w, h);
-      resolve(canvas.toDataURL("image/jpeg", 0.92));
+      ctx.drawImage(img, (SIZE-w)/2, (SIZE-h)/2, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.93));
     };
-    img.onerror = () => resolve(originalDataUrl);
-    img.src = originalDataUrl;
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
   });
+}
+
+// Opción C: varias prendas — recortar por bbox + fondo blanco
+function garmentImageCrop(dataUrl, bbox) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const SIZE = 600;
+      const PAD = 0.08; // 8% padding extra alrededor del crop
+
+      // bbox es fracción 0-1 del tamaño total de la imagen
+      const bx = Math.max(0, (bbox.x || 0) - PAD);
+      const by = Math.max(0, (bbox.y || 0) - PAD);
+      const bw = Math.min(1, (bbox.w || 1) + PAD * 2);
+      const bh = Math.min(1, (bbox.h || 1) + PAD * 2);
+
+      // Clamp para no salirse de la imagen
+      const sx = Math.max(0, bx * img.width);
+      const sy = Math.max(0, by * img.height);
+      const sw = Math.min(img.width - sx, bw * img.width);
+      const sh = Math.min(img.height - sy, bh * img.height);
+
+      // Canvas cuadrado con fondo blanco
+      const canvas = document.createElement("canvas");
+      canvas.width = SIZE; canvas.height = SIZE;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, SIZE, SIZE);
+
+      // Centrar el crop manteniendo ratio
+      const ratio = Math.min(SIZE / sw, SIZE / sh) * 0.85;
+      const dw = sw * ratio;
+      const dh = sh * ratio;
+      ctx.drawImage(img, sx, sy, sw, sh, (SIZE-dw)/2, (SIZE-dh)/2, dw, dh);
+
+      resolve(canvas.toDataURL("image/jpeg", 0.93));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+// Función principal: elige estrategia según número de prendas
+async function buildGarmentImages(dataUrl, prendas) {
+  if (prendas.length === 1) {
+    // Opción B: foto entera centrada en blanco
+    const img = await garmentImageSingle(dataUrl);
+    return [img];
+  } else {
+    // Opción C: recortar cada prenda por su bbox
+    return Promise.all(prendas.map(p => {
+      const bbox = {
+        x: p.bbox_x ?? 0,
+        y: p.bbox_y ?? 0,
+        w: p.bbox_w ?? 1,
+        h: p.bbox_h ?? 1,
+      };
+      // Si el bbox es la imagen completa (Claude no lo estimó bien), usar centrado
+      const isFullImage = bbox.w > 0.9 && bbox.h > 0.9;
+      if (isFullImage) return garmentImageSingle(dataUrl);
+      return garmentImageCrop(dataUrl, bbox);
+    }));
+  }
 }
 
 function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
@@ -494,10 +566,8 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
         throw new Error("No se detectaron prendas. Intenta con una foto más clara.");
       }
 
-      // Generar imagen con fondo blanco para cada prenda
-      const imgs = await Promise.all(
-        data.prendas.map(() => extractGarmentImage(imgUrl, ""))
-      );
+      // Generar imágenes: B (1 prenda) o C (varias con bbox)
+      const imgs = await buildGarmentImages(imgUrl, data.prendas);
       sgi(imgs);
 
       // Inicializar selección y nombres — todas seleccionadas por defecto
