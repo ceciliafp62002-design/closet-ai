@@ -58,41 +58,36 @@ Respond ONLY with pure JSON, no markdown, no code blocks, no extra text:
 {"prendas":[{"nombre":"descriptive name in Spanish","categoria":"top|bottom|dress|outerwear|shoes|bag|accessory","subcategoria":"exact type in Spanish","color_principal":"color in Spanish","colores":["c1","c2"],"marca_detectada":"brand visible in logo/embroidery/label or null","marca_posible":"probable brand by cut/design/details or null","razon_marca":"explanation of why you think it's that brand","material_estimado":"estimated textile composition with percentages if possible","patron":"solid|stripes|plaid|floral|geometric|animal_print|graphic|denim|knit","fit":"slim|regular|oversized|wide|fitted|cropped","temporadas":["spring","summer","autumn","winter","all_season"],"ocasiones":["casual","formal","business","sport","party","beach","home","outdoor"],"detalles":"description of unique details: stitching, buttons, pockets, finishes, estimated washing","estado_visible":"nuevo|excelente|bueno|usado","precio_estimado":"estimated price range in euros","confianza":0.95}],"conjunto_analisis":"analysis of the set if there are several garments","estilo_general":"casual|smart_casual|formal|sporty|bohemian|streetwear|elegante|otro"}`;
 
 async function callGemini(b64, mtype, apiKey) {
-  if (!apiKey) throw new Error("No hay API key de Gemini configurada. Ve a ⚙️ Configuración.");
+  if (!apiKey) throw new Error("No hay API key configurada. Ve a ⚙️ Configuración.");
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { inline_data: { mime_type: mtype, data: b64 } },
-            { text: AI_PROMPT }
-          ]
-        }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 2048,
-        }
-      })
-    }
-  );
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: "claude-opus-4-5",
+      max_tokens: 2048,
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: mtype, data: b64 }},
+        { type: "text", text: AI_PROMPT }
+      ]}]
+    })
+  });
 
   if (!res.ok) {
     const err = await res.json().catch(()=>({}));
-    const msg = err?.error?.message || `HTTP ${res.status}`;
-    if (res.status === 400) throw new Error("API key inválida o imagen no soportada. " + msg);
-    if (res.status === 429) throw new Error("Límite de peticiones alcanzado. Espera un momento.");
-    throw new Error("Error de Gemini: " + msg);
+    throw new Error(err?.error?.message || `HTTP ${res.status}`);
   }
 
   const d = await res.json();
-  let raw = d.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  let raw = d.content?.[0]?.text || "";
   raw = raw.replace(/```json\s*/g,"").replace(/```\s*/g,"").trim();
   const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("Gemini no devolvió JSON válido. Intenta con otra foto.");
+  if (!match) throw new Error("Sin respuesta válida. Intenta con otra foto.");
   return JSON.parse(match[0]);
 }
 
@@ -329,10 +324,11 @@ function ApiKeyScreen({onSave,onBack,current}) {
     st(true); se("");
     try {
       // Test rápido con texto plano
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-lastest:generateContent?key=${key.trim()}`,
-        { method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({ contents:[{parts:[{text:"Hi"}]}], generationConfig:{maxOutputTokens:5} }) }
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":key.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:5,messages:[{role:"user",content:"Hi"}]})
+    });
       );
       const d = await res.json();
       if (d.error) throw new Error(d.error.message);
