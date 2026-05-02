@@ -754,7 +754,7 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
             </div>
           ))}
         </div>
-        <p style={{color:T.text,fontWeight:700,fontSize:14}}>Guardando {numSel} prenda{numSel!==1?"s"}...</p>
+        <p style={{color:T.text,fontWeight:700,fontSize:14}}>Guardando {numSel} prenda{numSel!==1?"s":""}...</p>
         <div style={{width:200,height:3,background:T.high,borderRadius:2,overflow:"hidden"}}>
           <div style={{height:"100%",background:T.accent,borderRadius:2,animation:"bar 1.5s ease forwards"}} />
         </div>
