@@ -61,7 +61,7 @@ async function callGemini(b64, mtype, apiKey) {
   if (!apiKey) throw new Error("No hay API key de Gemini configurada. Ve a ⚙️ Configuración.");
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -330,7 +330,7 @@ function ApiKeyScreen({onSave,onBack,current}) {
     try {
       // Test rápido con texto plano
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key.trim()}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-lastest:generateContent?key=${key.trim()}`,
         { method:"POST", headers:{"Content-Type":"application/json"},
           body:JSON.stringify({ contents:[{parts:[{text:"Hi"}]}], generationConfig:{maxOutputTokens:5} }) }
       );
@@ -388,7 +388,7 @@ function ApiKeyScreen({onSave,onBack,current}) {
         </Btn>
         <div style={{marginTop:11,padding:"10px 13px",background:"rgba(201,240,78,0.05)",border:`1px solid ${T.aLow}`,borderRadius:10}}>
           <p style={{color:T.muted,fontSize:10,lineHeight:1.7,margin:0}}>
-            🔒 La key se guarda en <strong style={{color:T.dim}}>localStorage</strong> de tu navegador. Nadie externo puede acceder a ella. Modelo: <strong style={{color:T.dim}}>gemini-2.0-flash</strong> (gratis).
+            🔒 La key se guarda en <strong style={{color:T.dim}}>localStorage</strong> de tu navegador. Nadie externo puede acceder a ella. Modelo: <strong style={{color:T.dim}}>gemini-1.5-flash.lastest</strong> (gratis).
           </p>
         </div>
       </div>
