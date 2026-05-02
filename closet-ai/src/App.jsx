@@ -411,14 +411,26 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
   function readFile(file) {
     if (!file) return;
     if (!file.type.startsWith("image/")) { sae("Solo se aceptan imágenes (JPG, PNG, WEBP)"); return; }
-    if (file.size > 10 * 1024 * 1024) { sae("La imagen es demasiado grande (máx. 10MB)"); return; }
-    smt(file.type);
+    smt("image/jpeg");
     const reader = new FileReader();
     reader.onload = ev => {
-      const url = ev.target.result;
-      siu(url);
-      sib(url.split(",")[1]);
-      sae(null);
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1600;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const compressed = canvas.toDataURL("image/jpeg", 0.82);
+        siu(compressed);
+        sib(compressed.split(",")[1]);
+        sae(null);
+      };
+      img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
   }
