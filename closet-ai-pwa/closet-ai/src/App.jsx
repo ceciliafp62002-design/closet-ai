@@ -69,7 +69,7 @@ async function callGemini(b64, mtype, apiKey) {
       "anthropic-dangerous-direct-browser-access": "true"
     },
     body: JSON.stringify({
-      model: "claude-opus-4-5",
+      model: "claude-sonnet-4-5",
       max_tokens: 2048,
       messages: [{ role: "user", content: [
         { type: "image", source: { type: "base64", media_type: mtype, data: b64 }},
@@ -80,7 +80,10 @@ async function callGemini(b64, mtype, apiKey) {
 
   if (!res.ok) {
     const err = await res.json().catch(()=>({}));
-    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    const msg = err?.error?.message || `HTTP ${res.status}`;
+    if (res.status === 401) throw new Error("API key inválida. Verifica que empiece por sk-ant-");
+    if (res.status === 429) throw new Error("Límite de peticiones alcanzado. Espera un momento.");
+    throw new Error("Error: " + msg);
   }
 
   const d = await res.json();
@@ -97,15 +100,9 @@ const CSS = `
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{height:100%;height:100dvh;overflow:hidden;background:#08080A}
 ::-webkit-scrollbar{display:none}
+:root{--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
 input,button,select,textarea{font-family:'Sora',system-ui,sans-serif}
 input::placeholder,textarea::placeholder{color:#44444E}
-/* iOS safe areas (Dynamic Island, home indicator) */
-:root{
-  --sat: env(safe-area-inset-top, 0px);
-  --sab: env(safe-area-inset-bottom, 0px);
-  --sal: env(safe-area-inset-left, 0px);
-  --sar: env(safe-area-inset-right, 0px);
-}
 @keyframes spin  {to{transform:rotate(360deg)}}
 @keyframes pulse {0%,100%{opacity:1}50%{opacity:0.3}}
 @keyframes rise  {from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
@@ -321,14 +318,19 @@ function ApiKeyScreen({onSave,onBack,current}) {
 
   async function testAndSave() {
     if (!key.trim()) { se("Pega tu API key"); return; }
+    if (!key.trim().startsWith("sk-ant-")) { se("La key de Claude debe empezar por sk-ant-"); return; }
     st(true); se("");
     try {
-      // Test rápido con texto plano
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{"Content-Type":"application/json","x-api-key":key.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-      body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:5,messages:[{role:"user",content:"Hi"}]})
-    });
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "x-api-key":key.trim(),
+          "anthropic-version":"2023-06-01",
+          "anthropic-dangerous-direct-browser-access":"true"
+        },
+        body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:5,messages:[{role:"user",content:"Hi"}]})
+      });
       const d = await res.json();
       if (d.error) throw new Error(d.error.message);
       DB.saveApiKey(key.trim());
@@ -349,16 +351,16 @@ function ApiKeyScreen({onSave,onBack,current}) {
         <div style={{textAlign:"center",marginBottom:24}}>
           <div style={{fontSize:36,marginBottom:10}}>🔑</div>
           <p style={{color:T.text,fontSize:17,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",marginBottom:6}}>Gemini API Key</p>
-          <p style={{color:T.muted,fontSize:12,lineHeight:1.7}}>Gemini Vision es <strong style={{color:T.accent}}>gratuito</strong> con límite generoso. Tu key se guarda solo en este navegador.</p>
+          <p style={{color:T.muted,fontSize:12,lineHeight:1.7}}>Usa tu API key de <strong style={{color:T.accent}}>Claude (Anthropic)</strong>. Se guarda solo en este navegador.</p>
         </div>
 
         <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:"12px 14px",marginBottom:16}}>
           <p style={{color:T.dim,fontSize:11,fontWeight:700,marginBottom:8}}>Cómo obtener tu key gratis:</p>
           {[
-            ["1","Ve a aistudio.google.com"],
-            ["2","Inicia sesión con Google"],
-            ["3","Clic en 'Get API key'"],
-            ["4","Copia la key y pégala aquí"],
+            ["1","Ve a console.anthropic.com"],
+            ["2","API Keys → Create Key"],
+            ["3","Copia la key (empieza por sk-ant-)"],
+            ["4","Pégala aquí abajo"],
           ].map(([n,t])=>(
             <div key={n} style={{display:"flex",alignItems:"center",gap:9,marginBottom:7}}>
               <span style={{width:18,height:18,borderRadius:"50%",background:T.accent,color:"#08080A",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{n}</span>
@@ -371,7 +373,7 @@ function ApiKeyScreen({onSave,onBack,current}) {
           <label style={{display:"block",fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:5}}>Tu Gemini API Key</label>
           <div style={{display:"flex",alignItems:"center",background:T.high,borderRadius:11,padding:"0 13px",border:`1px solid ${T.border}`}}>
             <input type={show?"text":"password"} value={key} onChange={e=>sk(e.target.value)}
-              placeholder="AIzaSy..."
+              placeholder="sk-ant-api03-..."
               style={{background:"none",border:"none",outline:"none",color:T.text,fontSize:12,padding:"12px 0",width:"100%",fontFamily:"monospace"}} />
             <button onClick={()=>ss(!show)} style={{background:"none",border:"none",color:T.muted,cursor:"pointer",fontSize:14,padding:"0 0 0 8px"}}>{show?"🙈":"👁"}</button>
           </div>
@@ -383,7 +385,7 @@ function ApiKeyScreen({onSave,onBack,current}) {
         </Btn>
         <div style={{marginTop:11,padding:"10px 13px",background:"rgba(201,240,78,0.05)",border:`1px solid ${T.aLow}`,borderRadius:10}}>
           <p style={{color:T.muted,fontSize:10,lineHeight:1.7,margin:0}}>
-            🔒 La key se guarda en <strong style={{color:T.dim}}>localStorage</strong> de tu navegador. Nadie externo puede acceder a ella. Modelo: <strong style={{color:T.dim}}>gemini-1.5-flash.lastest</strong> (gratis).
+            🔒 La key se guarda en <strong style={{color:T.dim}}>localStorage</strong> de tu navegador. Nadie externo puede acceder a ella. Modelo: <strong style={{color:T.dim}}>claude-sonnet-4-5</strong>.
           </p>
         </div>
       </div>
@@ -494,7 +496,7 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
         {!apiKey && (
           <div onClick={onNeedKey} style={{background:"rgba(255,77,109,0.08)",border:`1px solid rgba(255,77,109,0.3)`,borderRadius:12,padding:"10px 13px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:14}}>⚠️</span>
-            <p style={{color:T.err,fontSize:12,margin:0,fontWeight:600}}>Sin API key. Toca aquí para configurar Gemini (gratis)</p>
+            <p style={{color:T.err,fontSize:12,margin:0,fontWeight:600}}>Sin API key. Toca aquí para configurar Claude</p>
           </div>
         )}
 
@@ -551,7 +553,7 @@ function ScannerScreen({onSave,onBack,apiKey,onNeedKey}) {
         </div>
       </div>
       <p style={{color:T.text,fontSize:16,fontWeight:700,marginBottom:4,fontFamily:"'Cormorant Garamond',serif"}}>Gemini Vision analizando...</p>
-      <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:20}}>Detectando prendas, colores, marcas y composición textil</p>
+      <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:20}}>Claude Vision identifica prendas, colores, marcas y composición textil</p>
       <div style={{display:"flex",flexDirection:"column",gap:8,width:"100%",maxWidth:245}}>
         {[["🔍","Detectando prendas"],["🎨","Analizando colores y patrones"],["🏷️","Identificando marcas y material"],["📊","Generando análisis completo"]].map(([ic,tx],i)=>(
           <div key={tx} style={{display:"flex",alignItems:"center",gap:9,opacity:step>i?1:0.25,transition:"opacity 0.4s"}}>
@@ -1140,8 +1142,8 @@ function BottomNav({active,onChange}) {
     <div style={{position:"absolute",bottom:0,left:0,right:0,background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-around",zIndex:100,paddingBottom:"var(--sab)"}}>
       {tabs.map(([ic,lb,id])=>(
         <button key={id} onClick={()=>onChange(id)}
-          style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,background:"none",border:"none",cursor:"pointer",flex:1,padding:"10px 0 8px"}}>
-          <span style={{fontSize:19}}>{ic}</span>
+          style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,background:"none",border:"none",cursor:"pointer",flex:1,padding:"6px 0"}}>
+          <span style={{fontSize:17}}>{ic}</span>
           <span style={{fontSize:9,fontWeight:700,color:active===id?T.accent:T.muted,transition:"color 0.2s"}}>{lb}</span>
         </button>
       ))}
@@ -1163,6 +1165,7 @@ export default function App() {
   const [outfitNew,son]= useState(false);
   const [toast,stt]   = useState(null);
 
+  // Check for existing session on mount
   useEffect(()=>{
     const session = DB.getSession();
     if (session) {
@@ -1240,91 +1243,94 @@ export default function App() {
 
   function saveKey(k) { sak(k); showToast("API key guardada ✓"); ss("app"); }
 
-  return (
-    <div style={{
-      width:"100%", height:"100dvh",
-      background:T.bg,
-      fontFamily:"'Sora',system-ui,sans-serif",
-      position:"relative",
-      overflow:"hidden",
-      paddingTop:"var(--sat)",
-    }}>
-      <style>{CSS}</style>
+  const isMainApp = screen==="app";
+  const showNav = isMainApp && !["scanner","detail","apikey"].includes(screen);
 
+  return (
+    <div style={{width:"100%",height:"100dvh",background:T.bg,fontFamily:"'Sora',system-ui,sans-serif",position:"relative",overflow:"hidden",paddingTop:"var(--sat)"}}>
+      <style>{CSS}</style>
       <div style={{height:"100%",display:"flex",flexDirection:"column",position:"relative"}}>
 
-        {screen==="auth" && <AuthScreen onLogin={login} />}
+          {/* AUTH */}
+          {screen==="auth" && <AuthScreen onLogin={login} />}
 
-        {screen==="apikey" && <ApiKeyScreen onSave={saveKey} onBack={()=>ss("app")} current={apiKey} />}
+          {/* API KEY */}
+          {screen==="apikey" && <ApiKeyScreen onSave={saveKey} onBack={()=>ss("app")} current={apiKey} />}
 
-        {screen==="scanner" && (
-          <ScannerScreen
-            onSave={saveGarment}
-            onBack={()=>ss("app")}
-            apiKey={apiKey}
-            onNeedKey={()=>ss("apikey")}
-          />
-        )}
+          {/* SCANNER */}
+          {screen==="scanner" && (
+            <ScannerScreen
+              onSave={saveGarment}
+              onBack={()=>ss("app")}
+              apiKey={apiKey}
+              onNeedKey={()=>ss("apikey")}
+            />
+          )}
 
-        {screen==="detail" && sel && (
-          <DetailScreen
-            garment={sel}
-            garments={items}
-            onBack={()=>ss("app")}
-            onUpdate={updateGarment}
-            onDelete={deleteGarment}
-          />
-        )}
+          {/* DETAIL */}
+          {screen==="detail" && sel && (
+            <DetailScreen
+              garment={sel}
+              garments={items}
+              onBack={()=>ss("app")}
+              onUpdate={updateGarment}
+              onDelete={deleteGarment}
+            />
+          )}
 
-        {screen==="app" && (
-          <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
-            <div style={{flex:1,overflow:"hidden",position:"relative"}}>
-              {tab==="home" && (
-                <HomeScreen
-                  user={user}
-                  garments={items}
-                  onScan={()=>ss("scanner")}
-                  onOpenGarment={g=>{ssel(g);ss("detail");}}
-                  onConfig={()=>ss("apikey")}
-                  apiKey={apiKey}
-                />
-              )}
-              {tab==="outfits" && (
-                <OutfitsScreen
-                  outfits={outfits}
-                  garments={items}
-                  onNew={()=>son(true)}
-                  onDeleteOutfit={deleteOutfit}
-                />
-              )}
-              {tab==="stats" && <StatsScreen garments={items} />}
-              {tab==="profile" && (
-                <ProfileScreen
-                  user={user}
-                  garments={items}
-                  onLogout={logout}
-                  onApiKey={()=>ss("apikey")}
-                  apiKey={apiKey}
-                />
+          {/* MAIN APP TABS */}
+          {screen==="app" && (
+            <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+              {/* Tab content */}
+              <div style={{flex:1,overflow:"hidden",position:"relative"}}>
+                {tab==="home" && (
+                  <HomeScreen
+                    user={user}
+                    garments={items}
+                    onScan={()=>ss("scanner")}
+                    onOpenGarment={g=>{ssel(g);ss("detail");}}
+                    onConfig={()=>ss("apikey")}
+                    apiKey={apiKey}
+                  />
+                )}
+                {tab==="outfits" && (
+                  <OutfitsScreen
+                    outfits={outfits}
+                    garments={items}
+                    onNew={()=>son(true)}
+                    onDeleteOutfit={deleteOutfit}
+                  />
+                )}
+                {tab==="stats" && <StatsScreen garments={items} />}
+                {tab==="profile" && (
+                  <ProfileScreen
+                    user={user}
+                    garments={items}
+                    onLogout={logout}
+                    onApiKey={()=>ss("apikey")}
+                    apiKey={apiKey}
+                  />
+                )}
+              </div>
+
+              {/* Bottom Nav */}
+              <BottomNav active={tab} onChange={st} />
+
+              {/* Outfit creation modal overlay */}
+              {outfitNew && (
+                <div style={{position:"absolute",inset:0,zIndex:250}}>
+                  <OutfitModal
+                    garments={items}
+                    startWith={null}
+                    onSave={saveOutfit}
+                    onClose={()=>son(false)}
+                  />
+                </div>
               )}
             </div>
+          )}
 
-            <BottomNav active={tab} onChange={st} />
-
-            {outfitNew && (
-              <div style={{position:"absolute",inset:0,zIndex:250}}>
-                <OutfitModal
-                  garments={items}
-                  startWith={null}
-                  onSave={saveOutfit}
-                  onClose={()=>son(false)}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {toast && screen!=="scanner" && <Toast msg={toast.msg} type={toast.type} />}
+          {toast && screen!=="scanner" && <Toast msg={toast.msg} type={toast.type} />}
       </div>
     </div>
   );
