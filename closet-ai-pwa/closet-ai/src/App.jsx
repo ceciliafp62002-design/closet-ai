@@ -329,7 +329,6 @@ function ApiKeyScreen({onSave,onBack,current}) {
       headers:{"Content-Type":"application/json","x-api-key":key.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
       body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:5,messages:[{role:"user",content:"Hi"}]})
     });
-      );
       const d = await res.json();
       if (d.error) throw new Error(d.error.message);
       DB.saveApiKey(key.trim());
