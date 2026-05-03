@@ -38,7 +38,7 @@ const COLOR_HEX = {
   white:"#f0f0f0",black:"#1a1a1a",blue:"#1a3a6c",red:"#8b1a1a",
   green:"#1a5a2a",pink:"#d4687a",gray:"#888",grey:"#888",brown:"#6a3a1a",
 };
-const API_LIMITS = { photoroom:500, removebg:50 };
+const API_LIMITS = { removebg:50, photoroom:500 };
 
 function toHex(n) {
   if (!n) return "#2a2a2a";
@@ -122,6 +122,8 @@ const DB = {
   saveApiKey:      (k) => localStorage.setItem("cai_gemini_key", k),
   getPhotoRoomKey: () => localStorage.getItem("cai_photoroom_key")||"",
   savePhotoRoomKey:(k) => localStorage.setItem("cai_photoroom_key", k),
+  getRemoveBgKey:  () => localStorage.getItem("cai_removebg_key")||"",
+  saveRemoveBgKey: (k) => localStorage.setItem("cai_removebg_key", k),
   saveSession:     (u) => localStorage.setItem("cai_session", JSON.stringify(u)),
   clearSession:    () => localStorage.removeItem("cai_session"),
 };
@@ -216,49 +218,29 @@ async function testClaudeKey(apiKey) {
 /* ─────────────────────────────────────────────────────────────
    PHOTOROOM — remove background
 ───────────────────────────────────────────────────────────── */
-async function removeBackgroundPhotoRoom(base64, apiKey) {
-  if (!apiKey) return null;
-  if (getApiUsage("photoroom").remaining <= 0) return null;
-
-  const bytes = atob(base64);
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-  const blob = new Blob([arr], { type: "image/jpeg" });
-
-  const fd = new FormData();
-  fd.append("image_file", blob, "img.jpg");
-
-  const res = await fetch("https://sdk.photoroom.com/v1/segment", {
-    method: "POST",
-    headers: { "x-api-key": apiKey },
-    body: fd,
-  });
-
-  if (!res.ok) return null; // silent fallback
-  incrementApiUsage("photoroom");
-  return await res.blob(); // PNG with transparency
-}
-
 /* ─────────────────────────────────────────────────────────────
-   IMAGE HELPERS
+   IMAGE HELPERS — canvas utilities
 ───────────────────────────────────────────────────────────── */
-function blobToWhiteBg(blob, maxDim = 700) {
+
+// Coloca un blob PNG (transparente) sobre fondo blanco
+function blobToWhiteBg(blob, SIZE = 600) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const s = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.round(img.width * s), h = Math.round(img.height * s);
-      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const r = Math.min(SIZE / img.width, SIZE / img.height) * 0.9;
+      const w = img.width * r, h = img.height * r;
+      const c = document.createElement("canvas"); c.width = SIZE; c.height = SIZE;
       const ctx = c.getContext("2d");
-      ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL("image/jpeg", 0.88));
+      ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, SIZE, SIZE);
+      ctx.drawImage(img, (SIZE-w)/2, (SIZE-h)/2, w, h);
+      resolve(c.toDataURL("image/jpeg", 0.9));
     };
     img.onerror = reject;
     img.src = URL.createObjectURL(blob);
   });
 }
 
+// Centra una dataUrl en fondo blanco (fallback sin recorte de fondo)
 function centerOnWhite(dataUrl, SIZE = 600) {
   return new Promise(resolve => {
     const img = new Image();
@@ -267,8 +249,7 @@ function centerOnWhite(dataUrl, SIZE = 600) {
       const ctx = c.getContext("2d");
       ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, SIZE, SIZE);
       const r = Math.min(SIZE / img.width, SIZE / img.height) * 0.82;
-      const w = img.width * r, h = img.height * r;
-      ctx.drawImage(img, (SIZE-w)/2, (SIZE-h)/2, w, h);
+      ctx.drawImage(img, (SIZE - img.width*r)/2, (SIZE - img.height*r)/2, img.width*r, img.height*r);
       resolve(c.toDataURL("image/jpeg", 0.9));
     };
     img.onerror = () => resolve(dataUrl);
@@ -276,11 +257,13 @@ function centerOnWhite(dataUrl, SIZE = 600) {
   });
 }
 
+// Recorta la zona bbox de una dataUrl y la centra en fondo blanco
+// Devuelve { dataUrl, base64 } del recorte
 function cropBbox(dataUrl, bbox, SIZE = 600) {
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
-      const PAD = 0.06;
+      const PAD = 0.05;
       const bx = Math.max(0, (bbox.x||0) - PAD);
       const by = Math.max(0, (bbox.y||0) - PAD);
       const bw = Math.min(1 - bx, (bbox.w||1) + PAD*2);
@@ -290,28 +273,102 @@ function cropBbox(dataUrl, bbox, SIZE = 600) {
       const c = document.createElement("canvas"); c.width = SIZE; c.height = SIZE;
       const ctx = c.getContext("2d");
       ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, SIZE, SIZE);
-      const r = Math.min(SIZE/sw, SIZE/sh) * 0.85;
+      const r = Math.min(SIZE/sw, SIZE/sh) * 0.88;
       ctx.drawImage(img, sx, sy, sw, sh, (SIZE - sw*r)/2, (SIZE - sh*r)/2, sw*r, sh*r);
-      resolve(c.toDataURL("image/jpeg", 0.9));
+      const url = c.toDataURL("image/jpeg", 0.9);
+      resolve({ dataUrl: url, base64: url.split(",")[1] });
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => resolve({ dataUrl, base64: dataUrl.split(",")[1] });
     img.src = dataUrl;
   });
 }
 
-async function buildGarmentImage(dataUrl, base64, garment, photoRoomKey) {
-  // 1. Try PhotoRoom background removal
-  if (photoRoomKey) {
-    try {
-      const blob = await removeBackgroundPhotoRoom(base64, photoRoomKey);
-      if (blob) return await blobToWhiteBg(blob, 700);
-    } catch (_) {}
-  }
-  // 2. Fallback: crop by bbox if precise enough
-  const bbox = { x: garment.bbox_x??0, y: garment.bbox_y??0, w: garment.bbox_w??1, h: garment.bbox_h??1 };
+// Convierte base64 a Blob para las APIs de recorte de fondo
+function base64ToBlob(base64, type = "image/jpeg") {
+  const bytes = atob(base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type });
+}
+
+/* ─────────────────────────────────────────────────────────────
+   REMOVE.BG API — mejor calidad, 50 gratis/mes
+───────────────────────────────────────────────────────────── */
+async function removeBackgroundRemoveBg(base64, apiKey) {
+  if (!apiKey || getApiUsage("removebg").remaining <= 0) return null;
+  try {
+    const fd = new FormData();
+    fd.append("image_file", base64ToBlob(base64), "img.jpg");
+    fd.append("size", "auto");
+    const res = await fetch("https://api.remove.bg/v1.0/removebg", {
+      method: "POST",
+      headers: { "X-Api-Key": apiKey },
+      body: fd,
+    });
+    if (!res.ok) return null;
+    incrementApiUsage("removebg");
+    return await res.blob(); // PNG transparente
+  } catch (_) { return null; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   PHOTOROOM API — fallback, 500 gratis/mes
+───────────────────────────────────────────────────────────── */
+async function removeBackgroundPhotoRoom(base64, apiKey) {
+  if (!apiKey || getApiUsage("photoroom").remaining <= 0) return null;
+  try {
+    const fd = new FormData();
+    fd.append("image_file", base64ToBlob(base64), "img.jpg");
+    const res = await fetch("https://sdk.photoroom.com/v1/segment", {
+      method: "POST",
+      headers: { "x-api-key": apiKey },
+      body: fd,
+    });
+    if (!res.ok) return null;
+    incrementApiUsage("photoroom");
+    return await res.blob(); // PNG transparente
+  } catch (_) { return null; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   PIPELINE PRINCIPAL
+   1. Claude detecta prendas + bbox
+   2. Recorta cada prenda por su bbox (canvas, sin API)
+   3. Envía el RECORTE a Remove.bg → si falla → PhotoRoom
+   4. Fallback: recorte en fondo blanco sin quitar fondo
+───────────────────────────────────────────────────────────── */
+async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, photoRoomKey) {
+  const bbox = {
+    x: garment.bbox_x ?? 0,
+    y: garment.bbox_y ?? 0,
+    w: garment.bbox_w ?? 1,
+    h: garment.bbox_h ?? 1,
+  };
   const isFullImage = bbox.w > 0.88 && bbox.h > 0.88;
-  if (isFullImage) return centerOnWhite(dataUrl);
-  return cropBbox(dataUrl, bbox);
+
+  // PASO 1: Recortar por bbox (siempre, gratis, para aislar la prenda)
+  let croppedDataUrl = fullDataUrl;
+  let croppedBase64 = fullBase64;
+  if (!isFullImage) {
+    const cropped = await cropBbox(fullDataUrl, bbox);
+    croppedDataUrl = cropped.dataUrl;
+    croppedBase64 = cropped.base64;
+  }
+
+  // PASO 2: Quitar fondo del recorte — primero Remove.bg, luego PhotoRoom
+  const hasRemoveBg  = removeBgKey  && getApiUsage("removebg").remaining  > 0;
+  const hasPhotoRoom = photoRoomKey && getApiUsage("photoroom").remaining > 0;
+
+  if (hasRemoveBg || hasPhotoRoom) {
+    let blob = null;
+    if (hasRemoveBg)  blob = await removeBackgroundRemoveBg(croppedBase64, removeBgKey);
+    if (!blob && hasPhotoRoom) blob = await removeBackgroundPhotoRoom(croppedBase64, photoRoomKey);
+    if (blob) return await blobToWhiteBg(blob, 600);
+  }
+
+  // PASO 3: Fallback — recorte en fondo blanco sin quitar fondo
+  if (!isFullImage) return croppedDataUrl;
+  return centerOnWhite(fullDataUrl);
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -569,13 +626,15 @@ function AuthScreen({ onLogin }) {
 /* ─────────────────────────────────────────────────────────────
    API KEY SCREEN
 ───────────────────────────────────────────────────────────── */
-function ApiKeyScreen({ onSave,onBack,current,currentPhotoRoom,onSavePhotoRoom }) {
-  const [key,sk] = useState(current||"");
+function ApiKeyScreen({ onSave,onBack,current,currentRemoveBg,currentPhotoRoom,onSaveRemoveBg,onSavePhotoRoom }) {
+  const [key,sk]     = useState(current||"");
+  const [rbKey,srbk] = useState(currentRemoveBg||"");
   const [prKey,sprk] = useState(currentPhotoRoom||"");
-  const [show,ss] = useState(false);
-  const [err,se] = useState("");
+  const [show,ss]    = useState(false);
+  const [err,se]     = useState("");
   const [testing,st] = useState(false);
-  const [prSaved,sprs] = useState(false);
+  const [rbSaved,srbs]  = useState(false);
+  const [prSaved,sprs]  = useState(false);
 
   async function testAndSave() {
     const trimmed = key.trim();
@@ -591,11 +650,15 @@ function ApiKeyScreen({ onSave,onBack,current,currentPhotoRoom,onSavePhotoRoom }
     } finally { st(false); }
   }
 
+  function saveRemoveBg() {
+    const t = rbKey.trim(); if (!t) return;
+    DB.saveRemoveBgKey(t); onSaveRemoveBg(t);
+    srbs(true); setTimeout(()=>srbs(false),2200);
+  }
+
   function savePhotoRoom() {
-    const trimmed = prKey.trim();
-    if (!trimmed) return;
-    DB.savePhotoRoomKey(trimmed);
-    onSavePhotoRoom(trimmed);
+    const t = prKey.trim(); if (!t) return;
+    DB.savePhotoRoomKey(t); onSavePhotoRoom(t);
     sprs(true); setTimeout(()=>sprs(false),2200);
   }
 
@@ -613,7 +676,7 @@ function ApiKeyScreen({ onSave,onBack,current,currentPhotoRoom,onSavePhotoRoom }
           <p style={{color:T.muted,fontSize:12,lineHeight:1.6}}>Tus keys se guardan solo en este dispositivo.</p>
         </div>
 
-        {/* CLAUDE */}
+        {/* ── CLAUDE ── */}
         <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:"12px 14px",marginBottom:14}}>
           <p style={{color:T.dim,fontSize:11,fontWeight:700,marginBottom:10,textTransform:"uppercase",letterSpacing:"1.2px"}}>Claude API — análisis de imagen</p>
           {[["1","Ve a console.anthropic.com"],["2","API Keys → Create Key"],["3","Copia la key (sk-ant-...)"],["4","Pégala abajo"]].map(([n,t])=>(
@@ -636,9 +699,48 @@ function ApiKeyScreen({ onSave,onBack,current,currentPhotoRoom,onSavePhotoRoom }
           {testing?"Verificando...":"Verificar y guardar Claude key"}
         </Btn>
 
-        {/* PHOTOROOM */}
-        <div style={{marginTop:24,borderTop:`1px solid ${T.border}`,paddingTop:20}}>
-          <p style={{color:T.dim,fontSize:11,fontWeight:700,marginBottom:10,textTransform:"uppercase",letterSpacing:"1.2px"}}>✂️ PhotoRoom — recorte de fondo</p>
+        {/* ── PIPELINE INFO ── */}
+        <div style={{marginTop:20,padding:"10px 13px",background:"rgba(201,240,78,0.05)",border:`1px solid ${T.aLow}`,borderRadius:10}}>
+          <p style={{color:T.accent,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:5}}>✂️ Cómo funciona el recorte</p>
+          <p style={{color:T.muted,fontSize:11,lineHeight:1.7,margin:0}}>
+            1. Claude detecta cada prenda y su posición<br/>
+            2. Se recorta cada prenda por su zona (sin API)<br/>
+            3. Remove.bg quita el fondo del recorte <strong style={{color:T.dim}}>(50/mes)</strong><br/>
+            4. Si se agota → PhotoRoom como reserva <strong style={{color:T.dim}}>(500/mes)</strong><br/>
+            5. Sin APIs → recorte en fondo blanco igualmente
+          </p>
+        </div>
+
+        {/* ── REMOVE.BG ── */}
+        <div style={{marginTop:20,borderTop:`1px solid ${T.border}`,paddingTop:20}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+            <p style={{color:T.dim,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",margin:0}}>🥇 Remove.bg — principal</p>
+            <span style={{background:"rgba(77,255,180,0.12)",border:`1px solid ${T.ok}`,borderRadius:20,padding:"2px 8px",fontSize:9,color:T.ok,fontWeight:700}}>MEJOR CALIDAD</span>
+          </div>
+          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"9px 12px",marginBottom:12}}>
+            <p style={{color:T.muted,fontSize:11,lineHeight:1.6,margin:0}}>
+              Gratis en{" "}
+              <a href="https://www.remove.bg/api" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>remove.bg/api</a>
+              {" "}— <strong style={{color:T.dim}}>50 recortes/mes gratis</strong>
+            </p>
+          </div>
+          <ApiUsageCounter provider="removebg" />
+          <div style={{marginBottom:10}}>
+            <label style={{display:"block",fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:5}}>Remove.bg API Key</label>
+            <input type="text" value={rbKey} onChange={e=>srbk(e.target.value)} placeholder="tu-api-key-remove-bg"
+              style={{width:"100%",background:T.high,border:`1px solid ${T.border}`,borderRadius:11,padding:"11px 13px",color:T.text,fontSize:12,outline:"none",fontFamily:"monospace"}} />
+          </div>
+          <Btn onClick={saveRemoveBg} disabled={!rbKey.trim()} icon={rbSaved?"✓":"💾"} v={rbSaved?"ghost":"primary"}>
+            {rbSaved?"¡Guardada!":"Guardar Remove.bg key"}
+          </Btn>
+        </div>
+
+        {/* ── PHOTOROOM ── */}
+        <div style={{marginTop:20,borderTop:`1px solid ${T.border}`,paddingTop:20}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+            <p style={{color:T.dim,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",margin:0}}>🥈 PhotoRoom — reserva</p>
+            <span style={{background:"rgba(201,240,78,0.1)",border:`1px solid ${T.aLow}`,borderRadius:20,padding:"2px 8px",fontSize:9,color:T.accent,fontWeight:700}}>500/MES</span>
+          </div>
           <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"9px 12px",marginBottom:12}}>
             <p style={{color:T.muted,fontSize:11,lineHeight:1.6,margin:0}}>
               Gratis en{" "}
@@ -668,7 +770,7 @@ function ApiKeyScreen({ onSave,onBack,current,currentPhotoRoom,onSavePhotoRoom }
 /* ─────────────────────────────────────────────────────────────
    SCANNER SCREEN
 ───────────────────────────────────────────────────────────── */
-function ScannerScreen({ onSave,onBack,apiKey,photoRoomKey,onNeedKey }) {
+function ScannerScreen({ onSave,onBack,apiKey,removeBgKey,photoRoomKey,onNeedKey }) {
   const [phase,sp] = useState("upload");
   const [imgUrl,siu] = useState(null);
   const [imgB64,sib] = useState(null);
@@ -716,9 +818,10 @@ function ScannerScreen({ onSave,onBack,apiKey,photoRoomKey,onNeedKey }) {
     try {
       const data = await callClaude(imgB64,imgMime,apiKey);
       clearInterval(timerRef.current);
-      const hasPR = !!photoRoomKey && getApiUsage("photoroom").remaining>0;
-      supr(hasPR);
-      const imgs = await Promise.all(data.prendas.map(p=>buildGarmentImage(imgUrl,imgB64,p,photoRoomKey)));
+      const hasRB = removeBgKey  && getApiUsage("removebg").remaining  > 0;
+      const hasPR = photoRoomKey && getApiUsage("photoroom").remaining > 0;
+      supr(hasRB || hasPR);
+      const imgs = await Promise.all(data.prendas.map(p=>buildGarmentImage(imgUrl,imgB64,p,removeBgKey,photoRoomKey)));
       sgi(imgs);
       const initSel={},initNames={};
       data.prendas.forEach((p,i)=>{initSel[i]=true;initNames[i]=p.nombre;});
@@ -788,10 +891,25 @@ function ScannerScreen({ onSave,onBack,apiKey,photoRoomKey,onNeedKey }) {
             <span>⚠️</span><p style={{color:T.err,fontSize:12,margin:0,fontWeight:600}}>Sin API key — toca para configurar</p>
           </div>
         )}
-        {photoRoomKey && (
-          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:12}}>✂️</span><span style={{color:T.dim,fontSize:11}}>Recorte IA activado</span></div>
-            {(()=>{ const u=getApiUsage("photoroom"); const c=u.remaining===0?T.err:u.remaining<=100?"#FF9F0A":T.ok; return <span style={{color:c,fontSize:11,fontWeight:700}}>{u.remaining}/500</span>; })()}
+        {(removeBgKey || photoRoomKey) && (
+          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"8px 12px"}}>
+            <p style={{color:T.dim,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:6}}>✂️ Recorte IA activado</p>
+            <div style={{display:"flex",gap:10}}>
+              {removeBgKey && (()=>{ const u=getApiUsage("removebg"); const c=u.remaining===0?T.err:T.ok; return(
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:10}}>🥇</span>
+                  <span style={{color:T.muted,fontSize:10}}>Remove.bg</span>
+                  <span style={{color:c,fontSize:10,fontWeight:700}}>{u.remaining}/50</span>
+                </div>
+              );})()}
+              {photoRoomKey && (()=>{ const u=getApiUsage("photoroom"); const c=u.remaining===0?T.err:u.remaining<=100?"#FF9F0A":T.ok; return(
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:10}}>🥈</span>
+                  <span style={{color:T.muted,fontSize:10}}>PhotoRoom</span>
+                  <span style={{color:c,fontSize:10,fontWeight:700}}>{u.remaining}/500</span>
+                </div>
+              );})()}
+            </div>
           </div>
         )}
         <div onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();readFile(e.dataTransfer.files?.[0]);}}
@@ -876,7 +994,7 @@ function ScannerScreen({ onSave,onBack,apiKey,photoRoomKey,onNeedKey }) {
           <button onClick={reset} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>↺ Nueva</button>
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
             <span style={{color:T.accent,fontSize:11,fontWeight:700}}>✦ {prendas.length} prenda{prendas.length!==1?"s":""} detectada{prendas.length!==1?"s":""}</span>
-            {usingPR && <span style={{color:T.ok,fontSize:9}}>✂️ Fondo eliminado con PhotoRoom</span>}
+            {usingPR && <span style={{color:T.ok,fontSize:9}}>✂️ Recorte bbox + fondo eliminado con IA</span>}
           </div>
           <button onClick={onBack} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
         </div>
@@ -1203,7 +1321,7 @@ function StatsScreen({ garments }) {
 /* ─────────────────────────────────────────────────────────────
    PROFILE SCREEN
 ───────────────────────────────────────────────────────────── */
-function ProfileScreen({ user,garments,onLogout,onApiKey,apiKey,photoRoomKey }) {
+function ProfileScreen({ user,garments,onLogout,onApiKey,apiKey,removeBgKey,photoRoomKey }) {
   const added=garments.filter(g=>g.added_at&&new Date(g.added_at)>new Date(Date.now()-7*86400000)).length;
   return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
@@ -1223,10 +1341,15 @@ function ProfileScreen({ user,garments,onLogout,onApiKey,apiKey,photoRoomKey }) 
             </div>
           ))}
         </div>
-        {photoRoomKey && <ApiUsageCounter provider="photoroom" />}
+        {(removeBgKey || photoRoomKey) && (
+          <div style={{marginBottom:14}}>
+            {removeBgKey  && <ApiUsageCounter provider="removebg" />}
+            {photoRoomKey && <ApiUsageCounter provider="photoroom" />}
+          </div>
+        )}
         <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,overflow:"hidden",marginBottom:12}}>
           {[
-            {icon:"🔑",label:"APIs configuradas",sub:`Claude ${apiKey?"✓":"✗"} · PhotoRoom ${photoRoomKey?"✓":"✗"}`,action:onApiKey,ok:!!apiKey},
+            {icon:"🔑",label:"APIs configuradas",sub:`Claude ${apiKey?"✓":"✗"} · Remove.bg ${removeBgKey?"✓":"✗"} · PhotoRoom ${photoRoomKey?"✓":"✗"}`,action:onApiKey,ok:!!apiKey},
             {icon:"📤",label:"Exportar armario",sub:"Próximamente",action:null,ok:false},
           ].map((item,i)=>(
             <button key={i} onClick={item.action||undefined} disabled={!item.action}
@@ -1317,6 +1440,7 @@ export default function App() {
   const [outfits,so] = useState([]);
   const [sel,ssel] = useState(null);
   const [apiKey,sak]   = useState(()=>DB.getApiKey());
+  const [rbKey,srbk]   = useState(()=>DB.getRemoveBgKey());
   const [prKey,sprk]   = useState(()=>DB.getPhotoRoomKey());
   const [outfitNew,son] = useState(false);
   const [toast,stt] = useState(null);
@@ -1369,6 +1493,7 @@ export default function App() {
   }
 
   function saveKey(k){ sak(k); showToast("Claude key guardada ✓"); ss("app"); }
+  function saveRemoveBgKey(k){ srbk(k); showToast("Remove.bg key guardada ✓"); }
   function savePhotoRoomKey(k){ sprk(k); showToast("PhotoRoom key guardada ✓"); }
 
   return (
@@ -1383,7 +1508,9 @@ export default function App() {
             onSave={saveKey}
             onBack={()=>ss("app")}
             current={apiKey}
+            currentRemoveBg={rbKey}
             currentPhotoRoom={prKey}
+            onSaveRemoveBg={saveRemoveBgKey}
             onSavePhotoRoom={savePhotoRoomKey}
           />
         )}
@@ -1393,6 +1520,7 @@ export default function App() {
             onSave={saveGarment}
             onBack={()=>ss("app")}
             apiKey={apiKey}
+            removeBgKey={rbKey}
             photoRoomKey={prKey}
             onNeedKey={()=>ss("apikey")}
           />
@@ -1414,7 +1542,7 @@ export default function App() {
               {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} />}
               {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} />}
               {tab==="stats" && <StatsScreen garments={items} />}
-              {tab==="profile" && <ProfileScreen user={user} garments={items} onLogout={logout} onApiKey={()=>ss("apikey")} apiKey={apiKey} photoRoomKey={prKey} />}
+              {tab==="profile" && <ProfileScreen user={user} garments={items} onLogout={logout} onApiKey={()=>ss("apikey")} apiKey={apiKey} removeBgKey={rbKey} photoRoomKey={prKey} />}
             </div>
             <BottomNav active={tab} onChange={st} />
             {outfitNew && (
