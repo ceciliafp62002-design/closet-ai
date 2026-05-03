@@ -1568,7 +1568,7 @@ INSTRUCCIONES:
   ];
 
   return (
-    <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
+    <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg,overflow:"hidden"}}>
       {/* Header */}
       <div style={{padding:"12px 14px 10px",borderBottom:`1px solid ${T.border}`,flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
@@ -1578,14 +1578,15 @@ INSTRUCCIONES:
         <button onClick={clearChat} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Limpiar</button>
       </div>
 
-      {/* Mensajes */}
-      <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+      {/* Mensajes — flex:1 con padding bottom para no quedar bajo el input */}
+      <div style={{flex:1,overflowY:"auto",padding:"12px 14px 16px",display:"flex",flexDirection:"column",gap:10}}>
 
-        {/* Quick replies si no hay conversación */}
+        {/* Quick replies si hay pocos mensajes */}
         {msgs.length<=1 && (
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4}}>
             {QUICK.map(q=>(
-              <button key={q} onClick={()=>{si(q);}} style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit",transition:"all 0.15s"}}>
+              <button key={q} onClick={()=>{ si(q); }}
+                style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
                 {q}
               </button>
             ))}
@@ -1606,24 +1607,24 @@ INSTRUCCIONES:
         {loading && (
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:8,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>✦</div>
-            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"14px 14px 14px 4px",padding:"10px 14px",display:"flex",gap:5,alignItems:"center"}}>
-              {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:T.accent,animation:`pulse 1.2s ease ${i*0.2}s infinite`}} />)}
+            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"14px 14px 14px 4px",padding:"12px 14px",display:"flex",gap:5,alignItems:"center"}}>
+              {[0,1,2].map(j=><div key={j} style={{width:6,height:6,borderRadius:"50%",background:T.accent,animation:`pulse 1.2s ease ${j*0.2}s infinite`}} />)}
             </div>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div style={{padding:"10px 14px 16px",borderTop:`1px solid ${T.border}`,flexShrink:0,display:"flex",gap:8,alignItems:"flex-end",background:T.bg}}>
-        <div style={{flex:1,background:T.high,borderRadius:14,padding:"10px 13px",border:`1px solid ${T.border}`}}>
+      {/* Input — flexShrink:0 fija el área abajo, encima del BottomNav */}
+      <div style={{flexShrink:0,borderTop:`1px solid ${T.border}`,padding:"10px 14px",paddingBottom:"calc(10px + var(--sab))",background:T.surface,display:"flex",gap:8,alignItems:"flex-end"}}>
+        <div style={{flex:1,background:T.high,borderRadius:14,border:`1px solid ${T.border}`,padding:"10px 13px",display:"flex",alignItems:"center"}}>
           <textarea value={input} onChange={e=>si(e.target.value)}
-            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+            onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
             placeholder="Pregunta sobre tu armario..." rows={1}
-            style={{width:"100%",background:"none",border:"none",outline:"none",color:T.text,fontSize:13,resize:"none",fontFamily:"inherit",lineHeight:1.5,maxHeight:80,overflowY:"auto"}} />
+            style={{width:"100%",background:"none",border:"none",outline:"none",color:T.text,fontSize:13,resize:"none",fontFamily:"'Sora',system-ui,sans-serif",lineHeight:1.5,maxHeight:90,overflowY:"auto",display:"block"}} />
         </div>
         <button onClick={send} disabled={!input.trim()||loading}
-          style={{width:42,height:42,borderRadius:12,background:input.trim()&&!loading?T.accent:T.high,border:"none",cursor:input.trim()&&!loading?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,transition:"all 0.2s"}}>
+          style={{width:44,height:44,borderRadius:12,background:input.trim()&&!loading?T.accent:T.high,border:`1px solid ${input.trim()&&!loading?T.accent:T.border}`,cursor:input.trim()&&!loading?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0,transition:"all 0.18s",color:input.trim()&&!loading?"#08080A":T.muted}}>
           {loading?"⟳":"↑"}
         </button>
       </div>
@@ -1913,7 +1914,11 @@ export default function App() {
             <div style={{flex:1,overflow:"hidden",position:"relative"}}>
               {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} />}
               {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} onSaveAiOutfit={saveAiOutfit} apiKey={apiKey} />}
-              {tab==="chat" && <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />}
+              {tab==="chat" && (
+                <div style={{position:"absolute",inset:0,bottom:56,display:"flex",flexDirection:"column"}}>
+                  <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />
+                </div>
+              )}
               {tab==="stats" && <StatsScreen garments={items} />}
               {tab==="profile" && <ProfileScreen user={user} garments={items} onLogout={logout} onApiKey={()=>ss("apikey")} apiKey={apiKey} removeBgKey={rbKey} photoRoomKey={prKey} />}
             </div>
