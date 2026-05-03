@@ -1224,23 +1224,201 @@ function DetailScreen({ garment,garments,onBack,onUpdate,onDelete }) {
 /* ─────────────────────────────────────────────────────────────
    OUTFITS SCREEN
 ───────────────────────────────────────────────────────────── */
-function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit }) {
-  const [confirmDel,scd]=useState(null);
+/* ─────────────────────────────────────────────────────────────
+   AI STYLIST — genera outfits con Claude
+───────────────────────────────────────────────────────────── */
+async function callStylist(garments, existingOutfits, apiKey) {
+  if (!apiKey) throw new Error("Necesitas configurar tu Claude API key en ⚙️");
+  if (garments.length < 2) throw new Error("Necesitas al menos 2 prendas en el armario");
+
+  const wardrobeDesc = garments.map((g,i) =>
+    `${i+1}. ID:${g.id} | ${g.name} | ${g.category} | color:${g.color_principal||g.color} | ocasion:${g.occasion} | temporadas:${(g.seasons||[]).join(",")} | material:${g.material||"?"} | marca:${g.brand||"ninguna"}`
+  ).join("\n");
+
+  const existingDesc = existingOutfits.length > 0
+    ? existingOutfits.map(o => `"${o.name}" (${o.garmentIds.join(",")})`).join(", ")
+    : "ninguno aún";
+
+  const prompt = `Eres un estilista de moda experto de lujo. Analiza este armario y crea 3 outfits creativos y coherentes.
+
+ARMARIO (${garments.length} prendas):
+${wardrobeDesc}
+
+OUTFITS YA EXISTENTES (no repetir): ${existingDesc}
+
+INSTRUCCIONES:
+- Analiza el estilo general de la persona según sus prendas
+- Crea 3 outfits distintos y con sentido (casual, smart-casual, especial)
+- Cada outfit debe tener 2-4 prendas que combinen bien
+- Usa SOLO los IDs de las prendas del armario
+- Justifica brevemente por qué combinan
+
+Responde SOLO con este JSON, sin markdown ni texto extra:
+{
+  "estilo_persona": "descripción del estilo general en 1-2 frases",
+  "outfits": [
+    {
+      "nombre": "nombre creativo del outfit",
+      "ocasion": "casual|formal|business|sport|party|beach|home|outdoor",
+      "garmentIds": ["id1","id2","id3"],
+      "por_que": "explicación en 1 frase de por qué funciona esta combinación",
+      "estacion": "primavera|verano|otoño|invierno|todo el año"
+    }
+  ]
+}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 1200,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const e = await res.json().catch(()=>({}));
+    throw new Error(e?.error?.message || "Error " + res.status);
+  }
+  const d = await res.json();
+  const raw = d.content?.find(b=>b.type==="text")?.text || "";
+  return safeParseJSON(raw);
+}
+
+function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,apiKey }) {
+  const [confirmDel,scd] = useState(null);
+  const [aiLoading,sal]  = useState(false);
+  const [aiResult,sar]   = useState(null);
+  const [aiErr,sae]      = useState(null);
+
+  async function generateAiOutfits() {
+    sal(true); sae(null); sar(null);
+    try {
+      const result = await callStylist(garments, outfits, apiKey);
+      sar(result);
+    } catch(e) { sae(e.message); }
+    finally { sal(false); }
+  }
+
+  function saveAiOutfit(o) {
+    onSaveAiOutfit({
+      id: "o_"+Date.now()+"_"+Math.random().toString(36).slice(2),
+      name: o.nombre,
+      garmentIds: o.garmentIds,
+      occasion: o.ocasion,
+      ai_generated: true,
+      por_que: o.por_que,
+      created_at: new Date().toISOString(),
+    });
+  }
+
   return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
       <div style={{padding:"13px 14px 10px",borderBottom:`1px solid ${T.border}`,flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif"}}>Mis Outfits</p>
-        <Btn onClick={onNew} icon="+" full={false} sm>Nuevo</Btn>
+        <Btn onClick={onNew} icon="+" full={false} sm>Manual</Btn>
       </div>
+
       <div style={{flex:1,overflowY:"auto",padding:"12px 13px 84px"}}>
-        {outfits.length===0
-          ? <div style={{textAlign:"center",padding:"60px 0"}}><div style={{fontSize:40,marginBottom:10}}>👔</div><p style={{color:T.muted,fontSize:13,marginBottom:16}}>Aún no tienes outfits</p><Btn onClick={onNew} icon="+" full={false}>Crear primer outfit</Btn></div>
-          : outfits.map(o=>{
+
+        {/* ── BOTÓN ESTILISTA IA ── */}
+        <div style={{marginBottom:16}}>
+          {!aiResult && !aiLoading && (
+            <button onClick={generateAiOutfits} disabled={garments.length<2||!apiKey}
+              style={{width:"100%",padding:"14px 16px",borderRadius:14,border:`1px solid ${T.accent}`,background:T.aLow,cursor:garments.length<2||!apiKey?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:12,opacity:garments.length<2||!apiKey?0.4:1,transition:"all 0.2s"}}>
+              <div style={{width:40,height:40,borderRadius:12,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>✦</div>
+              <div style={{textAlign:"left"}}>
+                <p style={{color:T.accent,fontSize:13,fontWeight:700,margin:"0 0 2px"}}>Crear outfits con IA</p>
+                <p style={{color:T.muted,fontSize:11,margin:0}}>
+                  {!apiKey?"Configura tu API key primero":garments.length<2?"Necesitas al menos 2 prendas":"El estilista analiza tu armario y combina prendas"}
+                </p>
+              </div>
+            </button>
+          )}
+
+          {aiLoading && (
+            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,padding:"20px 16px",textAlign:"center"}}>
+              <div style={{width:36,height:36,borderRadius:"50%",border:`3px solid ${T.border}`,borderTop:`3px solid ${T.accent}`,animation:"spin 0.8s linear infinite",margin:"0 auto 12px"}} />
+              <p style={{color:T.text,fontSize:13,fontWeight:600,margin:"0 0 4px"}}>Analizando tu armario...</p>
+              <p style={{color:T.muted,fontSize:11,margin:0}}>El estilista está combinando tus prendas</p>
+            </div>
+          )}
+
+          {aiErr && (
+            <div style={{background:"rgba(255,77,109,0.08)",border:"1px solid rgba(255,77,109,0.3)",borderRadius:12,padding:"10px 13px",marginBottom:10}}>
+              <p style={{color:T.err,fontSize:12,margin:"0 0 8px"}}>{aiErr}</p>
+              <Btn onClick={generateAiOutfits} sm full={false} icon="↺">Reintentar</Btn>
+            </div>
+          )}
+
+          {aiResult && (
+            <div style={{animation:"rise 0.3s ease"}}>
+              {/* Estilo de la persona */}
+              <div style={{background:`linear-gradient(135deg,${T.aLow},rgba(201,240,78,0.05))`,border:`1px solid ${T.accent}`,borderRadius:14,padding:"12px 14px",marginBottom:12}}>
+                <p style={{color:T.accent,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",margin:"0 0 5px"}}>✦ Tu estilo personal</p>
+                <p style={{color:T.text,fontSize:13,lineHeight:1.6,margin:"0 0 10px"}}>{aiResult.estilo_persona}</p>
+                <button onClick={()=>sar(null)} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Generar nuevos ↺</button>
+              </div>
+
+              {/* Outfits sugeridos */}
+              <p style={{color:T.muted,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:8}}>Outfits sugeridos</p>
+              {(aiResult.outfits||[]).map((o,idx)=>{
+                const pieces = garments.filter(g=>o.garmentIds.includes(g.id));
+                const alreadySaved = outfits.some(ex=>
+                  ex.garmentIds.length===o.garmentIds.length &&
+                  o.garmentIds.every(id=>ex.garmentIds.includes(id))
+                );
+                return (
+                  <div key={idx} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,padding:"12px 13px",marginBottom:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                      <div>
+                        <p style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 3px"}}>{o.nombre}</p>
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                          <Tag hi>{OCC_LBL[o.ocasion]||o.ocasion}</Tag>
+                          <Tag>{o.estacion}</Tag>
+                        </div>
+                      </div>
+                      {!alreadySaved
+                        ? <button onClick={()=>saveAiOutfit(o)} style={{background:T.accent,border:"none",color:"#08080A",borderRadius:8,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit",flexShrink:0}}>+ Guardar</button>
+                        : <span style={{color:T.ok,fontSize:10,fontWeight:700}}>✓ Guardado</span>}
+                    </div>
+                    <div style={{display:"flex",gap:5,marginBottom:8}}>
+                      {pieces.map(g=>(
+                        <div key={g.id} style={{width:50,height:58,borderRadius:9,overflow:"hidden",border:`1px solid ${T.border}`,background:"#fff",flexShrink:0}}>
+                          {g.imageUrl?<img src={g.imageUrl} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}} />:<div style={{width:"100%",height:"100%",background:g.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{g.emoji}</div>}
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{color:T.dim,fontSize:11,lineHeight:1.5,margin:0,fontStyle:"italic"}}>"{o.por_que}"</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ── OUTFITS GUARDADOS ── */}
+        {outfits.length>0 && (
+          <>
+            <p style={{color:T.muted,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:8}}>Tus outfits guardados</p>
+            {outfits.map(o=>{
               const pieces=garments.filter(g=>o.garmentIds.includes(g.id));
               return (
-                <div key={o.id} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,padding:"12px 13px",marginBottom:9}}>
+                <div key={o.id} style={{background:T.surface,border:`1px solid ${o.ai_generated?T.accent:T.border}`,borderRadius:14,padding:"12px 13px",marginBottom:9}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-                    <div><p style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 3px"}}>{o.name}</p><Tag hi>{OCC_LBL[o.occasion]||o.occasion}</Tag></div>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                        {o.ai_generated && <span style={{fontSize:9,background:T.aLow,color:T.accent,border:`1px solid ${T.accent}`,borderRadius:4,padding:"1px 5px",fontWeight:700}}>IA</span>}
+                        <p style={{color:T.text,fontSize:13,fontWeight:700,margin:0}}>{o.name}</p>
+                      </div>
+                      <Tag hi>{OCC_LBL[o.occasion]||o.occasion}</Tag>
+                    </div>
                     <button onClick={()=>scd(o.id)} style={{background:"none",border:"none",color:T.muted,cursor:"pointer",fontSize:14,padding:"0 4px"}}>✕</button>
                   </div>
                   <div style={{display:"flex",gap:5}}>
@@ -1250,6 +1428,7 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit }) {
                       </div>
                     ))}
                   </div>
+                  {o.por_que && <p style={{color:T.muted,fontSize:10,marginTop:7,lineHeight:1.4,fontStyle:"italic"}}>"{o.por_que}"</p>}
                   {confirmDel===o.id&&(
                     <div style={{marginTop:10,display:"flex",gap:7}}>
                       <Btn onClick={()=>{onDeleteOutfit(o.id);scd(null);}} danger sm icon="🗑">Eliminar</Btn>
@@ -1259,6 +1438,194 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit }) {
                 </div>
               );
             })}
+          </>
+        )}
+
+        {outfits.length===0 && !aiResult && !aiLoading && (
+          <div style={{textAlign:"center",padding:"30px 0"}}>
+            <div style={{fontSize:36,marginBottom:8}}>👔</div>
+            <p style={{color:T.muted,fontSize:12}}>Usa el estilista IA arriba o crea outfits manualmente</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   CHAT SCREEN — Asistente del armario
+───────────────────────────────────────────────────────────── */
+function ChatScreen({ garments,outfits,user,apiKey }) {
+  const [msgs,sm]    = useState([]);
+  const [input,si]   = useState("");
+  const [loading,sl] = useState(false);
+  const bottomRef    = useRef(null);
+
+  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[msgs]);
+
+  // Carga historial del chat guardado en localStorage
+  useEffect(()=>{
+    if (!user) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem("cai_chat_"+user.id)||"[]");
+      if (saved.length>0) sm(saved);
+      else sm([{role:"assistant",text:"¡Hola! Soy tu estilista personal. Conozco todo tu armario — puedes preguntarme qué ponerte hoy, cómo combinar prendas, qué te falta comprar, o pedirme que analice tu estilo. ¿En qué te ayudo? 👗✨"}]);
+    } catch { sm([{role:"assistant",text:"¡Hola! Soy tu estilista personal. ¿En qué te ayudo hoy? 👗✨"}]); }
+  },[user]);
+
+  function saveHistory(newMsgs) {
+    if (!user) return;
+    // Guardamos solo los últimos 40 mensajes para no llenar localStorage
+    const toSave = newMsgs.slice(-40);
+    localStorage.setItem("cai_chat_"+user.id, JSON.stringify(toSave));
+  }
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+    if (!apiKey) { sm(p=>[...p,{role:"assistant",text:"⚠️ Necesitas configurar tu Claude API key en ⚙️ Configuración para usar el chat."}]); return; }
+
+    const userMsg = {role:"user",text};
+    const newMsgs = [...msgs, userMsg];
+    sm(newMsgs); si(""); sl(true);
+
+    // Contexto del armario para Claude
+    const wardrobeCtx = garments.length===0
+      ? "El armario está vacío."
+      : garments.map(g=>`• ${g.name} (${g.category}, ${g.color_principal||g.color||""}, ${g.occasion}, ${(g.seasons||[]).join("/")||"todo año"}, ${g.material||"?"}, marca:${g.brand||"ninguna"})`).join("\n");
+
+    const outfitsCtx = outfits.length===0
+      ? "No tiene outfits guardados."
+      : outfits.map(o=>{
+          const pieces = garments.filter(g=>o.garmentIds.includes(g.id)).map(g=>g.name).join(", ");
+          return `• "${o.name}" (${o.occasion}): ${pieces}`;
+        }).join("\n");
+
+    // Historial de conversación para Claude (últimos 10 mensajes)
+    const history = newMsgs.slice(-11,-1).map(m=>({
+      role: m.role==="user"?"user":"assistant",
+      content: m.text,
+    }));
+
+    const systemPrompt = `Eres un estilista de moda experto y personal de ${user.name}. Conoces su armario al detalle y das consejos prácticos, creativos y personalizados.
+
+ARMARIO DE ${user.name.toUpperCase()} (${garments.length} prendas):
+${wardrobeCtx}
+
+OUTFITS GUARDADOS:
+${outfitsCtx}
+
+INSTRUCCIONES:
+- Sé conversacional, cálido y experto
+- Cuando sugiereas outfits, menciona las prendas por su nombre exacto
+- Si preguntan qué comprar, analiza los gaps del armario
+- Máximo 3 párrafos por respuesta, sé conciso
+- Puedes usar emojis con moderación
+- Responde siempre en español`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 600,
+          system: systemPrompt,
+          messages: [
+            ...history,
+            { role: "user", content: text },
+          ],
+        }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error.message);
+      const reply = d.content?.find(b=>b.type==="text")?.text || "No pude responder, intenta de nuevo.";
+      const updated = [...newMsgs,{role:"assistant",text:reply}];
+      sm(updated); saveHistory(updated);
+    } catch(e) {
+      const updated = [...newMsgs,{role:"assistant",text:"❌ Error: "+e.message}];
+      sm(updated); saveHistory(updated);
+    } finally { sl(false); }
+  }
+
+  function clearChat() {
+    const initial = [{role:"assistant",text:"Chat reiniciado. ¿En qué te puedo ayudar? 👗"}];
+    sm(initial);
+    if (user) localStorage.removeItem("cai_chat_"+user.id);
+  }
+
+  const QUICK = [
+    "¿Qué me pongo hoy?",
+    "¿Qué me falta en el armario?",
+    "Analiza mi estilo",
+    "Outfit para una cena elegante",
+    "¿Cómo combino mis prendas de colores?",
+  ];
+
+  return (
+    <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
+      {/* Header */}
+      <div style={{padding:"12px 14px 10px",borderBottom:`1px solid ${T.border}`,flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",margin:"0 0 1px"}}>Estilista IA</p>
+          <p style={{color:T.muted,fontSize:10,margin:0}}>{garments.length} prendas en tu armario</p>
+        </div>
+        <button onClick={clearChat} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Limpiar</button>
+      </div>
+
+      {/* Mensajes */}
+      <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+
+        {/* Quick replies si no hay conversación */}
+        {msgs.length<=1 && (
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4}}>
+            {QUICK.map(q=>(
+              <button key={q} onClick={()=>{si(q);}} style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit",transition:"all 0.15s"}}>
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {msgs.map((m,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",animation:"risefast 0.2s ease"}}>
+            {m.role==="assistant" && (
+              <div style={{width:28,height:28,borderRadius:8,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0,marginRight:8,marginTop:2}}>✦</div>
+            )}
+            <div style={{maxWidth:"78%",padding:"10px 13px",borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",background:m.role==="user"?T.accent:T.surface,border:m.role==="user"?"none":`1px solid ${T.border}`}}>
+              <p style={{color:m.role==="user"?"#08080A":T.text,fontSize:13,lineHeight:1.6,margin:0,whiteSpace:"pre-wrap"}}>{m.text}</p>
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:28,height:28,borderRadius:8,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>✦</div>
+            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"14px 14px 14px 4px",padding:"10px 14px",display:"flex",gap:5,alignItems:"center"}}>
+              {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:T.accent,animation:`pulse 1.2s ease ${i*0.2}s infinite`}} />)}
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div style={{padding:"10px 14px 16px",borderTop:`1px solid ${T.border}`,flexShrink:0,display:"flex",gap:8,alignItems:"flex-end",background:T.bg}}>
+        <div style={{flex:1,background:T.high,borderRadius:14,padding:"10px 13px",border:`1px solid ${T.border}`}}>
+          <textarea value={input} onChange={e=>si(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+            placeholder="Pregunta sobre tu armario..." rows={1}
+            style={{width:"100%",background:"none",border:"none",outline:"none",color:T.text,fontSize:13,resize:"none",fontFamily:"inherit",lineHeight:1.5,maxHeight:80,overflowY:"auto"}} />
+        </div>
+        <button onClick={send} disabled={!input.trim()||loading}
+          style={{width:42,height:42,borderRadius:12,background:input.trim()&&!loading?T.accent:T.high,border:"none",cursor:input.trim()&&!loading?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,transition:"all 0.2s"}}>
+          {loading?"⟳":"↑"}
+        </button>
       </div>
     </div>
   );
@@ -1416,12 +1783,12 @@ function HomeScreen({ user,garments,onScan,onOpenGarment,onConfig,apiKey }) {
    BOTTOM NAV
 ───────────────────────────────────────────────────────────── */
 function BottomNav({ active,onChange }) {
-  const tabs=[["🏠","Armario","home"],["👔","Outfits","outfits"],["📊","Stats","stats"],["👤","Perfil","profile"]];
+  const tabs=[["🏠","Armario","home"],["👔","Outfits","outfits"],["💬","Chat","chat"],["📊","Stats","stats"],["👤","Perfil","profile"]];
   return (
     <div style={{position:"absolute",bottom:0,left:0,right:0,background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",alignItems:"flex-start",justifyContent:"space-around",zIndex:100,paddingBottom:"var(--sab)"}}>
       {tabs.map(([ic,lb,id])=>(
         <button key={id} onClick={()=>onChange(id)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,background:"none",border:"none",cursor:"pointer",flex:1,padding:"6px 0"}}>
-          <span style={{fontSize:17}}>{ic}</span>
+          <span style={{fontSize:16}}>{ic}</span>
           <span style={{fontSize:9,fontWeight:700,color:active===id?T.accent:T.muted,transition:"color 0.2s"}}>{lb}</span>
         </button>
       ))}
@@ -1487,6 +1854,11 @@ export default function App() {
     son(false); showToast("Outfit guardado ✓");
   }
 
+  function saveAiOutfit(o){
+    so(prev=>{ const next=[o,...prev]; DB.saveOutfits(user.id,next); return next; });
+    showToast("Outfit IA guardado ✓");
+  }
+
   function deleteOutfit(id){
     so(prev=>{ const next=prev.filter(o=>o.id!==id); DB.saveOutfits(user.id,next); return next; });
     showToast("Outfit eliminado","err");
@@ -1540,7 +1912,8 @@ export default function App() {
           <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
             <div style={{flex:1,overflow:"hidden",position:"relative"}}>
               {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} />}
-              {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} />}
+              {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} onSaveAiOutfit={saveAiOutfit} apiKey={apiKey} />}
+              {tab==="chat" && <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />}
               {tab==="stats" && <StatsScreen garments={items} />}
               {tab==="profile" && <ProfileScreen user={user} garments={items} onLogout={logout} onApiKey={()=>ss("apikey")} apiKey={apiKey} removeBgKey={rbKey} photoRoomKey={prKey} />}
             </div>
