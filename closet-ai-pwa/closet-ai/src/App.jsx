@@ -337,13 +337,56 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
    3. Envía el RECORTE a Remove.bg → si falla → PhotoRoom
    4. Fallback: recorte en fondo blanco sin quitar fondo
 ───────────────────────────────────────────────────────────── */
-async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, photoRoomKey) {
+async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, photoRoomKey, onProgress) {
   const bbox = {
     x: garment.bbox_x ?? 0,
     y: garment.bbox_y ?? 0,
     w: garment.bbox_w ?? 1,
     h: garment.bbox_h ?? 1,
   };
+  const isFullImage = bbox.w > 0.88 && bbox.h > 0.88;
+
+  // PASO 1 — BRIA local (gratis, ilimitado, sin API)
+  // Enviamos la foto COMPLETA para mejor segmentación
+  try {
+    const { removeBackgroundBRIA } = await import("./useBackgroundRemoval.js");
+    const briaResult = await removeBackgroundBRIA(fullDataUrl, onProgress);
+    if (briaResult) {
+      // Si hay bbox, recortamos DESPUÉS de que BRIA quitó el fondo
+      if (!isFullImage) {
+        const cropped = await cropBbox(briaResult, bbox);
+        return cropped.dataUrl;
+      }
+      return briaResult;
+    }
+  } catch (e) {
+    console.warn("BRIA no disponible, usando fallback:", e);
+  }
+
+  // PASO 2 — Recortar por bbox (para APIs cloud)
+  let croppedDataUrl = fullDataUrl;
+  let croppedBase64 = fullBase64;
+  if (!isFullImage) {
+    const cropped = await cropBbox(fullDataUrl, bbox);
+    croppedDataUrl = cropped.dataUrl;
+    croppedBase64 = cropped.base64;
+  }
+
+  // PASO 3 — Remove.bg
+  const hasRemoveBg  = removeBgKey  && getApiUsage("removebg").remaining  > 0;
+  const hasPhotoRoom = photoRoomKey && getApiUsage("photoroom").remaining > 0;
+
+  if (hasRemoveBg || hasPhotoRoom) {
+    let blob = null;
+    if (hasRemoveBg)  blob = await removeBackgroundRemoveBg(croppedBase64, removeBgKey);
+    if (!blob && hasPhotoRoom) blob = await removeBackgroundPhotoRoom(croppedBase64, photoRoomKey);
+    if (blob) return await blobToWhiteBg(blob, 600);
+  }
+
+  // PASO 4 — Fallback canvas
+  if (!isFullImage) return croppedDataUrl;
+  return centerOnWhite(fullDataUrl);
+};
   const isFullImage = bbox.w > 0.88 && bbox.h > 0.88;
 
   // PASO 1: Recortar por bbox (siempre, gratis, para aislar la prenda)
@@ -369,7 +412,7 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
   // PASO 3: Fallback — recorte en fondo blanco sin quitar fondo
   if (!isFullImage) return croppedDataUrl;
   return centerOnWhite(fullDataUrl);
-}
+
 
 /* ─────────────────────────────────────────────────────────────
    CSS
@@ -785,6 +828,7 @@ function ScannerScreen({ onSave,onBack,apiKey,removeBgKey,photoRoomKey,onNeedKey
   const [selected,ssel] = useState({});
   const [editNames,sen] = useState({});
   const [usingPR,supr] = useState(false);
+const [briaProgress,sbp] = useState(null); // {pct, msg};
   const fileRef = useRef(null);
   const timerRef = useRef(null);
   useEffect(()=>()=>clearInterval(timerRef.current),[]);
@@ -821,7 +865,12 @@ function ScannerScreen({ onSave,onBack,apiKey,removeBgKey,photoRoomKey,onNeedKey
       const hasRB = removeBgKey  && getApiUsage("removebg").remaining  > 0;
       const hasPR = photoRoomKey && getApiUsage("photoroom").remaining > 0;
       supr(hasRB || hasPR);
-      const imgs = await Promise.all(data.prendas.map(p=>buildGarmentImage(imgUrl,imgB64,p,removeBgKey,photoRoomKey)));
+      const imgs = await Promise.all(data.prendas.map(p=>
+  buildGarmentImage(imgUrl, imgB64, p, removeBgKey, photoRoomKey, (pct, msg) => {
+    sbp({ pct, msg });
+  })
+));
+sbp(null);
       sgi(imgs);
       const initSel={},initNames={};
       data.prendas.forEach((p,i)=>{initSel[i]=true;initNames[i]=p.nombre;});
@@ -957,6 +1006,14 @@ function ScannerScreen({ onSave,onBack,apiKey,removeBgKey,photoRoomKey,onNeedKey
       </div>
       <p style={{color:T.text,fontSize:16,fontWeight:700,marginBottom:4,fontFamily:"'Cormorant Garamond',serif"}}>Claude Vision analizando...</p>
       <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:18}}>Detectando prendas, colores, marcas y materiales</p>
+{briaProgress && (
+  <div style={{width:"100%",maxWidth:260,marginBottom:14}}>
+    <p style={{color:T.accent,fontSize:12,textAlign:"center",marginBottom:6,fontWeight:600}}>{briaProgress.msg}</p>
+    <div style={{background:T.high,borderRadius:4,height:5,overflow:"hidden"}}>
+      <div style={{width:`${briaProgress.pct}%`,height:"100%",background:T.accent,borderRadius:4,transition:"width 0.4s ease"}} />
+    </div>
+  </div>
+)}
       <div style={{display:"flex",flexDirection:"column",gap:7,width:"100%",maxWidth:240}}>
         {[["🔍","Detectando prendas"],["🎨","Analizando colores y patrones"],["🏷️","Identificando marcas y material"],["📊","Generando análisis completo"]].map(([ic,tx],i)=>(
           <div key={tx} style={{display:"flex",alignItems:"center",gap:9,opacity:step>i?1:0.22,transition:"opacity 0.4s"}}>
@@ -1568,7 +1625,7 @@ INSTRUCCIONES:
   ];
 
   return (
-    <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg,overflow:"hidden"}}>
+    <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
       {/* Header */}
       <div style={{padding:"12px 14px 10px",borderBottom:`1px solid ${T.border}`,flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
@@ -1578,15 +1635,14 @@ INSTRUCCIONES:
         <button onClick={clearChat} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Limpiar</button>
       </div>
 
-      {/* Mensajes — flex:1 con padding bottom para no quedar bajo el input */}
-      <div style={{flex:1,overflowY:"auto",padding:"12px 14px 16px",display:"flex",flexDirection:"column",gap:10}}>
+      {/* Mensajes */}
+      <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
 
-        {/* Quick replies si hay pocos mensajes */}
+        {/* Quick replies si no hay conversación */}
         {msgs.length<=1 && (
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4}}>
             {QUICK.map(q=>(
-              <button key={q} onClick={()=>{ si(q); }}
-                style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
+              <button key={q} onClick={()=>{si(q);}} style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit",transition:"all 0.15s"}}>
                 {q}
               </button>
             ))}
@@ -1607,24 +1663,24 @@ INSTRUCCIONES:
         {loading && (
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:8,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>✦</div>
-            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"14px 14px 14px 4px",padding:"12px 14px",display:"flex",gap:5,alignItems:"center"}}>
-              {[0,1,2].map(j=><div key={j} style={{width:6,height:6,borderRadius:"50%",background:T.accent,animation:`pulse 1.2s ease ${j*0.2}s infinite`}} />)}
+            <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:"14px 14px 14px 4px",padding:"10px 14px",display:"flex",gap:5,alignItems:"center"}}>
+              {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:T.accent,animation:`pulse 1.2s ease ${i*0.2}s infinite`}} />)}
             </div>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input — flexShrink:0 fija el área abajo, encima del BottomNav */}
-      <div style={{flexShrink:0,borderTop:`1px solid ${T.border}`,padding:"10px 14px",paddingBottom:"calc(10px + var(--sab))",background:T.surface,display:"flex",gap:8,alignItems:"flex-end"}}>
-        <div style={{flex:1,background:T.high,borderRadius:14,border:`1px solid ${T.border}`,padding:"10px 13px",display:"flex",alignItems:"center"}}>
+      {/* Input */}
+      <div style={{padding:"10px 14px 16px",borderTop:`1px solid ${T.border}`,flexShrink:0,display:"flex",gap:8,alignItems:"flex-end",background:T.bg}}>
+        <div style={{flex:1,background:T.high,borderRadius:14,padding:"10px 13px",border:`1px solid ${T.border}`}}>
           <textarea value={input} onChange={e=>si(e.target.value)}
-            onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
             placeholder="Pregunta sobre tu armario..." rows={1}
-            style={{width:"100%",background:"none",border:"none",outline:"none",color:T.text,fontSize:13,resize:"none",fontFamily:"'Sora',system-ui,sans-serif",lineHeight:1.5,maxHeight:90,overflowY:"auto",display:"block"}} />
+            style={{width:"100%",background:"none",border:"none",outline:"none",color:T.text,fontSize:13,resize:"none",fontFamily:"inherit",lineHeight:1.5,maxHeight:80,overflowY:"auto"}} />
         </div>
         <button onClick={send} disabled={!input.trim()||loading}
-          style={{width:44,height:44,borderRadius:12,background:input.trim()&&!loading?T.accent:T.high,border:`1px solid ${input.trim()&&!loading?T.accent:T.border}`,cursor:input.trim()&&!loading?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0,transition:"all 0.18s",color:input.trim()&&!loading?"#08080A":T.muted}}>
+          style={{width:42,height:42,borderRadius:12,background:input.trim()&&!loading?T.accent:T.high,border:"none",cursor:input.trim()&&!loading?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,transition:"all 0.2s"}}>
           {loading?"⟳":"↑"}
         </button>
       </div>
@@ -1914,11 +1970,7 @@ export default function App() {
             <div style={{flex:1,overflow:"hidden",position:"relative"}}>
               {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} />}
               {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} onSaveAiOutfit={saveAiOutfit} apiKey={apiKey} />}
-              {tab==="chat" && (
-                <div style={{position:"absolute",inset:0,bottom:56,display:"flex",flexDirection:"column"}}>
-                  <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />
-                </div>
-              )}
+              {tab==="chat" && <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />}
               {tab==="stats" && <StatsScreen garments={items} />}
               {tab==="profile" && <ProfileScreen user={user} garments={items} onLogout={logout} onApiKey={()=>ss("apikey")} apiKey={apiKey} removeBgKey={rbKey} photoRoomKey={prKey} />}
             </div>
