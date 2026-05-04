@@ -343,19 +343,23 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundHF(base64) {
   try {
-    const blob = base64ToBlob(base64, "image/jpeg");
-    const res = await fetch(
-      "https://api-inference.huggingface.co/models/briaai/RMBG-1.4",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "image/jpeg",
-        },
-        body: blob,
-      }
-    );
+    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: [base64] }),
+    });
     if (!res.ok) return null;
-    return await res.blob();
+    const data = await res.json();
+    const eventId = data?.event_id;
+    if (!eventId) return null;
+    const res2 = await fetch(`https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image/${eventId}`);
+    if (!res2.ok) return null;
+    const text = await res2.text();
+    const match = text.match(/data:\s*(\[.*\])/);
+    if (!match) return null;
+    const result = JSON.parse(match[1]);
+    if (!result?.[0]) return null;
+    return base64ToBlob(result[0], "image/png");
   } catch (_) { return null; }
 }
 
