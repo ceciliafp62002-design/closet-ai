@@ -140,12 +140,18 @@ const DB = {
    CLAUDE VISION API
    ★ FIXED: correct body structure, correct model, full prompt
 ───────────────────────────────────────────────────────────── */
-const VISION_PROMPT = `You are a fashion expert. Analyze the image and identify ALL visible garments.
+const VISION_PROMPT = `You are a fashion expert and computer vision specialist. Analyze the image and identify ALL visible garments.
+
+CRITICAL BOUNDING BOX RULES — READ CAREFULLY:
+- bbox must wrap ONLY the garment fabric itself, NOT the person wearing it
+- Exclude: hands, arms, neck, face, legs, feet (body parts) from the bbox
+- For a top/shirt: bbox covers only collar→hem, shoulder seam→shoulder seam (fabric only)
+- For pants/jeans: bbox covers only waistband→ankle hem (fabric only, exclude feet)
+- For shoes: bbox covers only the shoe itself (exclude leg/ankle above the shoe)
+- Add a tight 2-3% padding around the garment edges, no more
+- If a garment is partially hidden, bbox only the visible portion
+
 IGNORE: phone cases, technology accessories, hands, faces, furniture, non-clothing objects.
-
-For each garment provide its bounding box as fractions (0.0–1.0):
-  bbox_x = left edge, bbox_y = top edge, bbox_w = width, bbox_h = height
-
 Only include garments with confidence >= 0.6.
 
 Respond ONLY with pure JSON — no markdown, no code fences, no extra text:
@@ -343,24 +349,50 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundHF(base64) {
   try {
+    // PASO 1: Enviar imagen y obtener event_id
     const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: [base64] }),
+      body: JSON.stringify({ data: ["data:image/jpeg;base64," + base64] }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) { console.warn("[HF] POST falló:", res.status); return null; }
     const data = await res.json();
     const eventId = data?.event_id;
-    if (!eventId) return null;
+    if (!eventId) { console.warn("[HF] Sin event_id:", data); return null; }
+
+    // PASO 2: Leer stream SSE hasta obtener el "data:" con resultado
     const res2 = await fetch(`https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image/${eventId}`);
-    if (!res2.ok) return null;
+    if (!res2.ok) { console.warn("[HF] GET stream falló:", res2.status); return null; }
     const text = await res2.text();
-    const match = text.match(/data:\s*(\[.*\])/);
-    if (!match) return null;
+    console.log("[HF] SSE raw (200 chars):", text.slice(0, 200));
+
+    // Buscar línea "data: [...]"
+    const match = text.match(/^data:\s*(\[[\s\S]*?\])\s*$/m);
+    if (!match) { console.warn("[HF] Sin data en SSE"); return null; }
     const result = JSON.parse(match[1]);
-    if (!result?.[0]) return null;
-    return base64ToBlob(result[0], "image/png");
-  } catch (_) { return null; }
+    const item = result?.[0];
+    if (!item) { console.warn("[HF] result[0] vacío"); return null; }
+
+    // El Space puede devolver: string base64, objeto {url, path, ...} o {data: "..."}
+    if (typeof item === "string") {
+      // base64 puro o data URI
+      const b64 = item.includes(",") ? item.split(",")[1] : item;
+      return base64ToBlob(b64, "image/png");
+    }
+    if (typeof item === "object") {
+      // Objeto con url: descargamos el PNG desde el HF Space
+      const imgUrl = item.url || item.path;
+      if (!imgUrl) { console.warn("[HF] Sin url en objeto:", item); return null; }
+      const fullUrl = imgUrl.startsWith("http")
+        ? imgUrl
+        : `https://ceciliafp62002-design-closetai-rembg.hf.space/file=${imgUrl}`;
+      const imgRes = await fetch(fullUrl);
+      if (!imgRes.ok) { console.warn("[HF] Descarga PNG falló:", imgRes.status); return null; }
+      return await imgRes.blob();
+    }
+    console.warn("[HF] Tipo inesperado:", typeof item, item);
+    return null;
+  } catch (e) { console.warn("[HF] Error:", e.message); return null; }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -1091,10 +1123,31 @@ sbp(null);
             );
           })}
         </div>
-        <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"12px 14px 16px",background:T.bg,borderTop:`1px solid ${T.border}`}}>
-          <Btn onClick={saveAll} disabled={numSel===0} icon="→">
-            {numSel===0?"Selecciona al menos una":`Guardar ${numSel} prenda${numSel!==1?"s":""} en mi armario`}
-          </Btn>
+        <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"10px 14px 14px",background:T.bg,borderTop:`1px solid ${T.border}`}}>
+          <div style={{display:"flex",gap:8,marginBottom:8}}>
+            <button
+              onClick={()=>ssel(Object.fromEntries(prendas.map((_,i)=>[i,true])))}
+              style={{flex:1,padding:"8px",borderRadius:9,border:`1px solid ${T.border}`,background:T.high,color:T.dim,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+              Seleccionar todo
+            </button>
+            <button
+              onClick={()=>{ ssel(Object.fromEntries(prendas.map((_,i)=>[i,false]))); }}
+              style={{flex:1,padding:"8px",borderRadius:9,border:"1px solid rgba(255,77,109,0.35)",background:"rgba(255,77,109,0.08)",color:T.err,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+              Deseleccionar todo
+            </button>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button
+              onClick={reset}
+              style={{padding:"12px 14px",borderRadius:11,border:`1px solid ${T.border}`,background:"none",color:T.muted,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+              🗑 Descartar
+            </button>
+            <div style={{flex:1}}>
+              <Btn onClick={saveAll} disabled={numSel===0} icon="→">
+                {numSel===0?"Selecciona al menos una":`Guardar ${numSel} prenda${numSel!==1?"s":""}`}
+              </Btn>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -1793,10 +1846,34 @@ function ProfileScreen({ user,garments,onLogout,onApiKey,apiKey,removeBgKey,phot
 /* ─────────────────────────────────────────────────────────────
    HOME SCREEN
 ───────────────────────────────────────────────────────────── */
-function HomeScreen({ user,garments,onScan,onOpenGarment,onConfig,apiKey }) {
+function HomeScreen({ user,garments,onScan,onOpenGarment,onConfig,apiKey,onDeleteMultiple }) {
   const [cat,sc]=useState("Todos");
   const [q,sq]=useState("");
+  const [selectMode,setSM]=useState(false);
+  const [selected,setSel]=useState({});
+  const pressTimer=useRef(null);
+
   const items=garments.filter(g=>(cat==="Todos"||g.category===cat)&&(!q||g.name.toLowerCase().includes(q.toLowerCase())||(g.brand||"").toLowerCase().includes(q.toLowerCase())));
+  const numSel=Object.values(selected).filter(Boolean).length;
+
+  function enterSelectMode(id) { setSM(true); setSel({[id]:true}); }
+  function toggleSel(id) { setSel(p=>({...p,[id]:!p[id]})); }
+  function exitSelectMode() { setSM(false); setSel({}); }
+  function selectAll() { setSel(Object.fromEntries(items.map(g=>[g.id,true]))); }
+  function deleteSelected() {
+    const ids=Object.entries(selected).filter(([,v])=>v).map(([k])=>k);
+    if(ids.length&&onDeleteMultiple) { onDeleteMultiple(ids); exitSelectMode(); }
+  }
+
+  function handleCardPress(g) {
+    if(selectMode) { toggleSel(g.id); return; }
+    pressTimer.current=setTimeout(()=>enterSelectMode(g.id),500);
+  }
+  function handleCardRelease(g,wasTap) {
+    clearTimeout(pressTimer.current);
+    if(!selectMode&&wasTap) onOpenGarment(g);
+  }
+
   return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg,position:"relative"}}>
       <div style={{padding:"13px 14px 0",flexShrink:0}}>
@@ -1807,31 +1884,69 @@ function HomeScreen({ user,garments,onScan,onOpenGarment,onConfig,apiKey }) {
           </div>
           <div style={{display:"flex",gap:7,alignItems:"center"}}>
             <div style={{background:T.high,border:`1px solid ${T.border}`,borderRadius:8,padding:"4px 9px"}}><span style={{color:T.dim,fontSize:11,fontWeight:600}}>{garments.length} prendas</span></div>
-            <button onClick={onConfig} style={{width:32,height:32,borderRadius:9,background:apiKey?T.high:"rgba(255,77,109,0.15)",border:`1px solid ${apiKey?T.border:"rgba(255,77,109,0.4)"}`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",position:"relative"}}>
-              <span style={{fontSize:14}}>⚙️</span>
-              {!apiKey&&<span style={{position:"absolute",top:-3,right:-3,width:8,height:8,borderRadius:"50%",background:T.err,border:`1.5px solid ${T.bg}`}} />}
-            </button>
-            <div style={{width:32,height:32,borderRadius:9,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#08080A"}}>{user.name[0].toUpperCase()}</div>
+            {!selectMode && <>
+              <button onClick={onConfig} style={{width:32,height:32,borderRadius:9,background:apiKey?T.high:"rgba(255,77,109,0.15)",border:`1px solid ${apiKey?T.border:"rgba(255,77,109,0.4)"}`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",position:"relative"}}>
+                <span style={{fontSize:14}}>⚙️</span>
+                {!apiKey&&<span style={{position:"absolute",top:-3,right:-3,width:8,height:8,borderRadius:"50%",background:T.err,border:`1.5px solid ${T.bg}`}} />}
+              </button>
+              <div style={{width:32,height:32,borderRadius:9,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#08080A"}}>{user.name[0].toUpperCase()}</div>
+            </>}
+            {selectMode && <>
+              <button onClick={selectAll} style={{background:"none",border:`1px solid ${T.border}`,borderRadius:8,padding:"5px 10px",color:T.dim,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Todo</button>
+              <button onClick={exitSelectMode} style={{background:"none",border:"none",color:T.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Cancelar</button>
+            </>}
           </div>
         </div>
-        <div style={{position:"relative",marginBottom:9}}>
+        {!selectMode && <div style={{position:"relative",marginBottom:9}}>
           <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:T.muted,fontSize:12,pointerEvents:"none"}}>🔍</span>
           <input value={q} onChange={e=>sq(e.target.value)} placeholder="Buscar prendas o marcas..."
             style={{width:"100%",background:T.high,border:`1px solid ${T.border}`,borderRadius:10,padding:"9px 10px 9px 32px",color:T.text,fontSize:12,outline:"none"}} />
-        </div>
+        </div>}
+        {selectMode && <div style={{marginBottom:9,padding:"7px 10px",background:"rgba(255,77,109,0.07)",border:"1px solid rgba(255,77,109,0.2)",borderRadius:9}}>
+          <p style={{color:T.muted,fontSize:11,margin:0}}>{numSel>0?`${numSel} prenda${numSel!==1?"s":""} seleccionada${numSel!==1?"s":""}` : "Toca prendas para seleccionar"}</p>
+        </div>}
         <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:10}}>
           {CATS.map(c=><Pill key={c} label={CAT_LBL[c]||c} active={cat===c} onClick={()=>sc(c)} />)}
         </div>
       </div>
-      <div style={{flex:1,overflowY:"auto",padding:"0 11px 84px"}}>
+      <div style={{flex:1,overflowY:"auto",padding:`0 11px ${selectMode?100:84}px`}}>
         {items.length===0
           ? <div style={{textAlign:"center",padding:"50px 0"}}><div style={{fontSize:36,marginBottom:8}}>👗</div><p style={{color:T.muted,fontSize:12}}>{q?"Sin resultados":"No hay prendas aquí"}</p></div>
-          : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{items.map(g=><GarmentCard key={g.id} g={g} onClick={()=>onOpenGarment(g)} />)}</div>}
+          : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {items.map(g=>{
+                const isSel=!!selected[g.id];
+                let tapStart=0;
+                return (
+                  <div key={g.id} style={{position:"relative"}}
+                    onPointerDown={()=>{tapStart=Date.now();handleCardPress(g);}}
+                    onPointerUp={()=>handleCardRelease(g,Date.now()-tapStart<400)}
+                    onPointerLeave={()=>clearTimeout(pressTimer.current)}>
+                    <div style={{opacity:selectMode&&!isSel?0.5:1,transition:"opacity 0.15s",outline:isSel?`2px solid ${T.accent}`:"none",borderRadius:16}}>
+                      <GarmentCard g={g} onClick={()=>{}} />
+                    </div>
+                    {selectMode && (
+                      <div style={{position:"absolute",top:8,right:8,width:22,height:22,borderRadius:"50%",background:isSel?T.accent:T.high,border:`2px solid ${isSel?T.accent:T.border}`,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none",zIndex:10}}>
+                        {isSel&&<span style={{color:"#08080A",fontSize:11,fontWeight:900}}>✓</span>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>}
       </div>
-      <button onClick={onScan}
+      {!selectMode && <button onClick={onScan}
         style={{position:"absolute",bottom:72,right:13,width:50,height:50,borderRadius:"50%",background:T.accent,border:"none",cursor:"pointer",fontSize:19,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 24px ${T.aMid},0 0 0 4px ${T.bg}`,animation:"glow 2.5s infinite"}}>
         📸
-      </button>
+      </button>}
+      {selectMode && numSel>0 && (
+        <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"10px 14px 16px",background:T.bg,borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
+          <button onClick={exitSelectMode} style={{padding:"12px 14px",borderRadius:11,border:`1px solid ${T.border}`,background:"none",color:T.muted,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Cancelar</button>
+          <button onClick={deleteSelected}
+            style={{flex:1,padding:"12px",borderRadius:11,border:"1px solid rgba(255,77,109,0.4)",background:"rgba(255,77,109,0.12)",color:T.err,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+            🗑 Eliminar {numSel} prenda{numSel!==1?"s":""}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1906,6 +2021,12 @@ export default function App() {
     showToast("Prenda eliminada","err");
   }
 
+  function deleteMultipleGarments(ids){
+    const set=new Set(ids);
+    si(prev=>{ const next=prev.filter(g=>!set.has(g.id)); DB.saveGarments(user.id,next); return next; });
+    showToast(`${ids.length} prenda${ids.length!==1?"s":""} eliminada${ids.length!==1?"s":""}`, "err");
+  }
+
   function saveOutfit(o){
     so(prev=>{ const next=[o,...prev]; DB.saveOutfits(user.id,next); return next; });
     son(false); showToast("Outfit guardado ✓");
@@ -1968,7 +2089,7 @@ export default function App() {
         {screen==="app" && (
           <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
             <div style={{flex:1,overflow:"hidden",position:"relative"}}>
-              {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} />}
+              {tab==="home" && <HomeScreen user={user} garments={items} onScan={()=>ss("scanner")} onOpenGarment={g=>{ssel(g);ss("detail");}} onConfig={()=>ss("apikey")} apiKey={apiKey} onDeleteMultiple={deleteMultipleGarments} />}
               {tab==="outfits" && <OutfitsScreen outfits={outfits} garments={items} onNew={()=>son(true)} onDeleteOutfit={deleteOutfit} onSaveAiOutfit={saveAiOutfit} apiKey={apiKey} />}
               {tab==="chat" && <ChatScreen garments={items} outfits={outfits} user={user} apiKey={apiKey} />}
               {tab==="stats" && <StatsScreen garments={items} />}
