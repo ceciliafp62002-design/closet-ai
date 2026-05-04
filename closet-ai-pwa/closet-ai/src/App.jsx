@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { removeBackgroundBRIA } from "./useBackgroundRemoval.js";
 
 /* ─────────────────────────────────────────────────────────────
    THEME
@@ -327,7 +328,6 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
 
   // PASO 1 — BRIA local (gratis, ilimitado, sin API)
   try {
-    const { removeBackgroundBRIA } = await import("./useBackgroundRemoval.js");
     const briaResult = await removeBackgroundBRIA(fullDataUrl, onProgress);
     if (briaResult) {
       if (!isFullImage) {
