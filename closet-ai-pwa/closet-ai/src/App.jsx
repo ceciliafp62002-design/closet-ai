@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from "react";
-import { removeBackgroundBRIA } from "./useBackgroundRemoval.js";
 
 /* ─────────────────────────────────────────────────────────────
    THEME
