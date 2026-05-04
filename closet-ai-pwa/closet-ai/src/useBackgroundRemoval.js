@@ -87,7 +87,7 @@ export async function removeBackgroundBRIA(imageDataUrl, onProgress) {
 
     ctx.drawImage(offscreen, dx, dy, dw, dh);
 
-    return canvas.toDataURL("image/jpeg", 0.92);
+    return canvas.toDataURL("image/png");
 
   } catch (err) {
     console.warn("BRIA falló:", err);
