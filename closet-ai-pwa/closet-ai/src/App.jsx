@@ -47,21 +47,15 @@ function toHex(n) {
 
 /* ─────────────────────────────────────────────────────────────
    SAFE JSON PARSE
-   Handles Claude responses wrapped in markdown fences
 ───────────────────────────────────────────────────────────── */
 function safeParseJSON(text) {
   if (!text) throw new Error("Respuesta vacía de la IA");
-  // Strip markdown fences
   let s = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
-  // Direct parse
   try { return JSON.parse(s); } catch (_) {}
-  // Extract object
   const om = s.match(/(\{[\s\S]*\})/);
   if (om) { try { return JSON.parse(om[1]); } catch (_) {} }
-  // Extract array
   const am = s.match(/(\[[\s\S]*\])/);
   if (am) { try { return JSON.parse(am[1]); } catch (_) {} }
-  // Try repairing truncated JSON
   try { return JSON.parse(s + "]}"); } catch (_) {}
   throw new Error("No se pudo leer la respuesta de la IA. Intenta de nuevo.");
 }
@@ -98,7 +92,6 @@ function getApiUsage(provider) {
   } catch { return { count:0, remaining:limit }; }
 }
 function incrementApiUsage(provider) {
-  const limit = API_LIMITS[provider] || 500;
   const cur = new Date().toISOString().slice(0,7);
   const { count } = getApiUsage(provider);
   localStorage.setItem("cai_" + provider + "_usage", JSON.stringify({ count:count+1, month:cur }));
@@ -130,7 +123,6 @@ const DB = {
 
 /* ─────────────────────────────────────────────────────────────
    CLAUDE VISION API
-   ★ FIXED: correct body structure, correct model, full prompt
 ───────────────────────────────────────────────────────────── */
 const VISION_PROMPT = `You are a fashion expert. Analyze the image and identify ALL visible garments.
 IGNORE: phone cases, technology accessories, hands, faces, furniture, non-clothing objects.
@@ -146,7 +138,6 @@ Respond ONLY with pure JSON — no markdown, no code fences, no extra text:
 
 async function callClaude(base64, mediaType, apiKey) {
   if (!apiKey) throw new Error("No hay API key. Ve a ⚙️ Configuración.");
-
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -167,7 +158,6 @@ async function callClaude(base64, mediaType, apiKey) {
       }],
     }),
   });
-
   if (!response.ok) {
     let msg = "HTTP " + response.status;
     try { const e = await response.json(); msg = e?.error?.message || msg; } catch (_) {}
@@ -175,11 +165,9 @@ async function callClaude(base64, mediaType, apiKey) {
     if (response.status === 429) throw new Error("Demasiadas peticiones. Espera un momento.");
     throw new Error("Error Claude: " + msg);
   }
-
   const data = await response.json();
   const rawText = (data.content || []).find(b => b.type === "text")?.text || "";
   if (!rawText) throw new Error("Claude no devolvió texto. Intenta de nuevo.");
-
   const parsed = safeParseJSON(rawText);
   if (!parsed.prendas || parsed.prendas.length === 0) {
     throw new Error("No se detectaron prendas. Intenta con una foto más clara.");
@@ -192,7 +180,7 @@ async function callClaude(base64, mediaType, apiKey) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   CLAUDE API TEST (for key verification)
+   CLAUDE API TEST
 ───────────────────────────────────────────────────────────── */
 async function testClaudeKey(apiKey) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -216,13 +204,8 @@ async function testClaudeKey(apiKey) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   PHOTOROOM — remove background
+   IMAGE HELPERS
 ───────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────────
-   IMAGE HELPERS — canvas utilities
-───────────────────────────────────────────────────────────── */
-
-// Coloca un blob PNG (transparente) sobre fondo blanco
 function blobToWhiteBg(blob, SIZE = 600) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -240,7 +223,6 @@ function blobToWhiteBg(blob, SIZE = 600) {
   });
 }
 
-// Centra una dataUrl en fondo blanco (fallback sin recorte de fondo)
 function centerOnWhite(dataUrl, SIZE = 600) {
   return new Promise(resolve => {
     const img = new Image();
@@ -257,8 +239,6 @@ function centerOnWhite(dataUrl, SIZE = 600) {
   });
 }
 
-// Recorta la zona bbox de una dataUrl y la centra en fondo blanco
-// Devuelve { dataUrl, base64 } del recorte
 function cropBbox(dataUrl, bbox, SIZE = 600) {
   return new Promise(resolve => {
     const img = new Image();
@@ -283,7 +263,6 @@ function cropBbox(dataUrl, bbox, SIZE = 600) {
   });
 }
 
-// Convierte base64 a Blob para las APIs de recorte de fondo
 function base64ToBlob(base64, type = "image/jpeg") {
   const bytes = atob(base64);
   const arr = new Uint8Array(bytes.length);
@@ -292,7 +271,7 @@ function base64ToBlob(base64, type = "image/jpeg") {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   REMOVE.BG API — mejor calidad, 50 gratis/mes
+   REMOVE.BG API
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundRemoveBg(base64, apiKey) {
   if (!apiKey || getApiUsage("removebg").remaining <= 0) return null;
@@ -307,12 +286,12 @@ async function removeBackgroundRemoveBg(base64, apiKey) {
     });
     if (!res.ok) return null;
     incrementApiUsage("removebg");
-    return await res.blob(); // PNG transparente
+    return await res.blob();
   } catch (_) { return null; }
 }
 
 /* ─────────────────────────────────────────────────────────────
-   PHOTOROOM API — fallback, 500 gratis/mes
+   PHOTOROOM API
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundPhotoRoom(base64, apiKey) {
   if (!apiKey || getApiUsage("photoroom").remaining <= 0) return null;
@@ -326,16 +305,16 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
     });
     if (!res.ok) return null;
     incrementApiUsage("photoroom");
-    return await res.blob(); // PNG transparente
+    return await res.blob();
   } catch (_) { return null; }
 }
 
 /* ─────────────────────────────────────────────────────────────
-   PIPELINE PRINCIPAL
-   1. Claude detecta prendas + bbox
-   2. Recorta cada prenda por su bbox (canvas, sin API)
-   3. Envía el RECORTE a Remove.bg → si falla → PhotoRoom
-   4. Fallback: recorte en fondo blanco sin quitar fondo
+   PIPELINE PRINCIPAL — buildGarmentImage
+   1. BRIA local (gratis, ilimitado)
+   2. Remove.bg (50/mes)
+   3. PhotoRoom (500/mes)
+   4. Fallback canvas
 ───────────────────────────────────────────────────────────── */
 async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, photoRoomKey, onProgress) {
   const bbox = {
@@ -347,12 +326,10 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
   const isFullImage = bbox.w > 0.88 && bbox.h > 0.88;
 
   // PASO 1 — BRIA local (gratis, ilimitado, sin API)
-  // Enviamos la foto COMPLETA para mejor segmentación
   try {
     const { removeBackgroundBRIA } = await import("./useBackgroundRemoval.js");
     const briaResult = await removeBackgroundBRIA(fullDataUrl, onProgress);
     if (briaResult) {
-      // Si hay bbox, recortamos DESPUÉS de que BRIA quitó el fondo
       if (!isFullImage) {
         const cropped = await cropBbox(briaResult, bbox);
         return cropped.dataUrl;
@@ -363,7 +340,7 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
     console.warn("BRIA no disponible, usando fallback:", e);
   }
 
-  // PASO 2 — Recortar por bbox (para APIs cloud)
+  // PASO 2 — Recortar por bbox para APIs cloud
   let croppedDataUrl = fullDataUrl;
   let croppedBase64 = fullBase64;
   if (!isFullImage) {
@@ -372,7 +349,7 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
     croppedBase64 = cropped.base64;
   }
 
-  // PASO 3 — Remove.bg
+  // PASO 3 — Remove.bg / PhotoRoom
   const hasRemoveBg  = removeBgKey  && getApiUsage("removebg").remaining  > 0;
   const hasPhotoRoom = photoRoomKey && getApiUsage("photoroom").remaining > 0;
 
@@ -386,33 +363,7 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
   // PASO 4 — Fallback canvas
   if (!isFullImage) return croppedDataUrl;
   return centerOnWhite(fullDataUrl);
-};
-  const isFullImage = bbox.w > 0.88 && bbox.h > 0.88;
-
-  // PASO 1: Recortar por bbox (siempre, gratis, para aislar la prenda)
-  let croppedDataUrl = fullDataUrl;
-  let croppedBase64 = fullBase64;
-  if (!isFullImage) {
-    const cropped = await cropBbox(fullDataUrl, bbox);
-    croppedDataUrl = cropped.dataUrl;
-    croppedBase64 = cropped.base64;
-  }
-
-  // PASO 2: Quitar fondo del recorte — primero Remove.bg, luego PhotoRoom
-  const hasRemoveBg  = removeBgKey  && getApiUsage("removebg").remaining  > 0;
-  const hasPhotoRoom = photoRoomKey && getApiUsage("photoroom").remaining > 0;
-
-  if (hasRemoveBg || hasPhotoRoom) {
-    let blob = null;
-    if (hasRemoveBg)  blob = await removeBackgroundRemoveBg(croppedBase64, removeBgKey);
-    if (!blob && hasPhotoRoom) blob = await removeBackgroundPhotoRoom(croppedBase64, photoRoomKey);
-    if (blob) return await blobToWhiteBg(blob, 600);
-  }
-
-  // PASO 3: Fallback — recorte en fondo blanco sin quitar fondo
-  if (!isFullImage) return croppedDataUrl;
-  return centerOnWhite(fullDataUrl);
-
+}
 
 /* ─────────────────────────────────────────────────────────────
    CSS
@@ -718,8 +669,6 @@ function ApiKeyScreen({ onSave,onBack,current,currentRemoveBg,currentPhotoRoom,o
           <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",marginBottom:4}}>APIs de ClosetAI</p>
           <p style={{color:T.muted,fontSize:12,lineHeight:1.6}}>Tus keys se guardan solo en este dispositivo.</p>
         </div>
-
-        {/* ── CLAUDE ── */}
         <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:"12px 14px",marginBottom:14}}>
           <p style={{color:T.dim,fontSize:11,fontWeight:700,marginBottom:10,textTransform:"uppercase",letterSpacing:"1.2px"}}>Claude API — análisis de imagen</p>
           {[["1","Ve a console.anthropic.com"],["2","API Keys → Create Key"],["3","Copia la key (sk-ant-...)"],["4","Pégala abajo"]].map(([n,t])=>(
@@ -741,31 +690,19 @@ function ApiKeyScreen({ onSave,onBack,current,currentRemoveBg,currentPhotoRoom,o
         <Btn onClick={testAndSave} icon={testing?"⟳":"✓"} disabled={!key.trim()||testing}>
           {testing?"Verificando...":"Verificar y guardar Claude key"}
         </Btn>
-
-        {/* ── PIPELINE INFO ── */}
         <div style={{marginTop:20,padding:"10px 13px",background:"rgba(201,240,78,0.05)",border:`1px solid ${T.aLow}`,borderRadius:10}}>
           <p style={{color:T.accent,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:5}}>✂️ Cómo funciona el recorte</p>
           <p style={{color:T.muted,fontSize:11,lineHeight:1.7,margin:0}}>
-            1. Claude detecta cada prenda y su posición<br/>
-            2. Se recorta cada prenda por su zona (sin API)<br/>
-            3. Remove.bg quita el fondo del recorte <strong style={{color:T.dim}}>(50/mes)</strong><br/>
-            4. Si se agota → PhotoRoom como reserva <strong style={{color:T.dim}}>(500/mes)</strong><br/>
-            5. Sin APIs → recorte en fondo blanco igualmente
+            1. BRIA IA local — gratis, ilimitado, en tu dispositivo<br/>
+            2. Remove.bg como respaldo <strong style={{color:T.dim}}>(50/mes)</strong><br/>
+            3. PhotoRoom como segundo respaldo <strong style={{color:T.dim}}>(500/mes)</strong><br/>
+            4. Sin APIs → recorte en fondo blanco igualmente
           </p>
         </div>
-
-        {/* ── REMOVE.BG ── */}
         <div style={{marginTop:20,borderTop:`1px solid ${T.border}`,paddingTop:20}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-            <p style={{color:T.dim,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",margin:0}}>🥇 Remove.bg — principal</p>
+            <p style={{color:T.dim,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",margin:0}}>🥇 Remove.bg — respaldo</p>
             <span style={{background:"rgba(77,255,180,0.12)",border:`1px solid ${T.ok}`,borderRadius:20,padding:"2px 8px",fontSize:9,color:T.ok,fontWeight:700}}>MEJOR CALIDAD</span>
-          </div>
-          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"9px 12px",marginBottom:12}}>
-            <p style={{color:T.muted,fontSize:11,lineHeight:1.6,margin:0}}>
-              Gratis en{" "}
-              <a href="https://www.remove.bg/api" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>remove.bg/api</a>
-              {" "}— <strong style={{color:T.dim}}>50 recortes/mes gratis</strong>
-            </p>
           </div>
           <ApiUsageCounter provider="removebg" />
           <div style={{marginBottom:10}}>
@@ -777,19 +714,10 @@ function ApiKeyScreen({ onSave,onBack,current,currentRemoveBg,currentPhotoRoom,o
             {rbSaved?"¡Guardada!":"Guardar Remove.bg key"}
           </Btn>
         </div>
-
-        {/* ── PHOTOROOM ── */}
         <div style={{marginTop:20,borderTop:`1px solid ${T.border}`,paddingTop:20}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
             <p style={{color:T.dim,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",margin:0}}>🥈 PhotoRoom — reserva</p>
             <span style={{background:"rgba(201,240,78,0.1)",border:`1px solid ${T.aLow}`,borderRadius:20,padding:"2px 8px",fontSize:9,color:T.accent,fontWeight:700}}>500/MES</span>
-          </div>
-          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"9px 12px",marginBottom:12}}>
-            <p style={{color:T.muted,fontSize:11,lineHeight:1.6,margin:0}}>
-              Gratis en{" "}
-              <a href="https://www.photoroom.com/api" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>photoroom.com/api</a>
-              {" "}— <strong style={{color:T.dim}}>500 recortes/mes gratis</strong>
-            </p>
           </div>
           <ApiUsageCounter provider="photoroom" />
           <div style={{marginBottom:10}}>
@@ -801,7 +729,6 @@ function ApiKeyScreen({ onSave,onBack,current,currentRemoveBg,currentPhotoRoom,o
             {prSaved?"¡Guardada!":"Guardar PhotoRoom key"}
           </Btn>
         </div>
-
         <div style={{marginTop:14,padding:"10px 13px",background:"rgba(201,240,78,0.05)",border:`1px solid ${T.aLow}`,borderRadius:10}}>
           <p style={{color:T.muted,fontSize:10,lineHeight:1.7,margin:0}}>🔒 Keys guardadas en <strong style={{color:T.dim}}>localStorage</strong>. Nadie externo puede leerlas.</p>
         </div>
@@ -828,7 +755,7 @@ function ScannerScreen({ onSave,onBack,apiKey,removeBgKey,photoRoomKey,onNeedKey
   const [selected,ssel] = useState({});
   const [editNames,sen] = useState({});
   const [usingPR,supr] = useState(false);
-const [briaProgress,sbp] = useState(null); // {pct, msg};
+  const [briaProgress,sbp] = useState(null);
   const fileRef = useRef(null);
   const timerRef = useRef(null);
   useEffect(()=>()=>clearInterval(timerRef.current),[]);
@@ -866,11 +793,11 @@ const [briaProgress,sbp] = useState(null); // {pct, msg};
       const hasPR = photoRoomKey && getApiUsage("photoroom").remaining > 0;
       supr(hasRB || hasPR);
       const imgs = await Promise.all(data.prendas.map(p=>
-  buildGarmentImage(imgUrl, imgB64, p, removeBgKey, photoRoomKey, (pct, msg) => {
-    sbp({ pct, msg });
-  })
-));
-sbp(null);
+        buildGarmentImage(imgUrl, imgB64, p, removeBgKey, photoRoomKey, (pct, msg) => {
+          sbp({ pct, msg });
+        })
+      ));
+      sbp(null);
       sgi(imgs);
       const initSel={},initNames={};
       data.prendas.forEach((p,i)=>{initSel[i]=true;initNames[i]=p.nombre;});
@@ -918,11 +845,10 @@ sbp(null);
     ssa(true);
   }
 
-  function reset() { sp("upload");siu(null);sib(null);sr(null);sae(null);scd(null);ssa(false);ssv(false); }
+  function reset() { sp("upload");siu(null);sib(null);sr(null);sae(null);scd(null);ssa(false);ssv(false);sbp(null); }
   function toggleSel(i) { ssel(p=>({...p,[i]:!p[i]})); }
   const numSel = Object.values(selected).filter(Boolean).length;
 
-  /* UPLOAD */
   if (phase==="upload") return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
       <input ref={fileRef} type="file" accept="image/*" onChange={e=>readFile(e.target.files?.[0])} style={{display:"none"}} />
@@ -985,7 +911,6 @@ sbp(null);
     </div>
   );
 
-  /* ANALYZING */
   if (phase==="analyzing") return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:T.bg,padding:26}}>
       <div style={{width:90,height:90,borderRadius:"50%",border:`3px solid ${T.border}`,position:"relative",marginBottom:22,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
@@ -1006,14 +931,14 @@ sbp(null);
       </div>
       <p style={{color:T.text,fontSize:16,fontWeight:700,marginBottom:4,fontFamily:"'Cormorant Garamond',serif"}}>Claude Vision analizando...</p>
       <p style={{color:T.muted,fontSize:12,textAlign:"center",maxWidth:220,lineHeight:1.7,marginBottom:18}}>Detectando prendas, colores, marcas y materiales</p>
-{briaProgress && (
-  <div style={{width:"100%",maxWidth:260,marginBottom:14}}>
-    <p style={{color:T.accent,fontSize:12,textAlign:"center",marginBottom:6,fontWeight:600}}>{briaProgress.msg}</p>
-    <div style={{background:T.high,borderRadius:4,height:5,overflow:"hidden"}}>
-      <div style={{width:`${briaProgress.pct}%`,height:"100%",background:T.accent,borderRadius:4,transition:"width 0.4s ease"}} />
-    </div>
-  </div>
-)}
+      {briaProgress && (
+        <div style={{width:"100%",maxWidth:260,marginBottom:14}}>
+          <p style={{color:T.accent,fontSize:12,textAlign:"center",marginBottom:6,fontWeight:600}}>{briaProgress.msg}</p>
+          <div style={{background:T.high,borderRadius:4,height:5,overflow:"hidden"}}>
+            <div style={{width:`${briaProgress.pct}%`,height:"100%",background:T.accent,borderRadius:4,transition:"width 0.4s ease"}} />
+          </div>
+        </div>
+      )}
       <div style={{display:"flex",flexDirection:"column",gap:7,width:"100%",maxWidth:240}}>
         {[["🔍","Detectando prendas"],["🎨","Analizando colores y patrones"],["🏷️","Identificando marcas y material"],["📊","Generando análisis completo"]].map(([ic,tx],i)=>(
           <div key={tx} style={{display:"flex",alignItems:"center",gap:9,opacity:step>i?1:0.22,transition:"opacity 0.4s"}}>
@@ -1027,7 +952,6 @@ sbp(null);
     </div>
   );
 
-  /* RESULTS */
   if (phase==="results"&&result) {
     const prendas = result.prendas||[];
     if (savedAll) return (
@@ -1279,23 +1203,17 @@ function DetailScreen({ garment,garments,onBack,onUpdate,onDelete }) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   OUTFITS SCREEN
-───────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────────
-   AI STYLIST — genera outfits con Claude
+   AI STYLIST
 ───────────────────────────────────────────────────────────── */
 async function callStylist(garments, existingOutfits, apiKey) {
   if (!apiKey) throw new Error("Necesitas configurar tu Claude API key en ⚙️");
   if (garments.length < 2) throw new Error("Necesitas al menos 2 prendas en el armario");
-
   const wardrobeDesc = garments.map((g,i) =>
     `${i+1}. ID:${g.id} | ${g.name} | ${g.category} | color:${g.color_principal||g.color} | ocasion:${g.occasion} | temporadas:${(g.seasons||[]).join(",")} | material:${g.material||"?"} | marca:${g.brand||"ninguna"}`
   ).join("\n");
-
   const existingDesc = existingOutfits.length > 0
     ? existingOutfits.map(o => `"${o.name}" (${o.garmentIds.join(",")})`).join(", ")
     : "ninguno aún";
-
   const prompt = `Eres un estilista de moda experto de lujo. Analiza este armario y crea 3 outfits creativos y coherentes.
 
 ARMARIO (${garments.length} prendas):
@@ -1323,7 +1241,6 @@ Responde SOLO con este JSON, sin markdown ni texto extra:
     }
   ]
 }`;
-
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -1338,7 +1255,6 @@ Responde SOLO con este JSON, sin markdown ni texto extra:
       messages: [{ role: "user", content: prompt }],
     }),
   });
-
   if (!res.ok) {
     const e = await res.json().catch(()=>({}));
     throw new Error(e?.error?.message || "Error " + res.status);
@@ -1348,6 +1264,9 @@ Responde SOLO con este JSON, sin markdown ni texto extra:
   return safeParseJSON(raw);
 }
 
+/* ─────────────────────────────────────────────────────────────
+   OUTFITS SCREEN
+───────────────────────────────────────────────────────────── */
 function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,apiKey }) {
   const [confirmDel,scd] = useState(null);
   const [aiLoading,sal]  = useState(false);
@@ -1381,10 +1300,7 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
         <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif"}}>Mis Outfits</p>
         <Btn onClick={onNew} icon="+" full={false} sm>Manual</Btn>
       </div>
-
       <div style={{flex:1,overflowY:"auto",padding:"12px 13px 84px"}}>
-
-        {/* ── BOTÓN ESTILISTA IA ── */}
         <div style={{marginBottom:16}}>
           {!aiResult && !aiLoading && (
             <button onClick={generateAiOutfits} disabled={garments.length<2||!apiKey}
@@ -1398,7 +1314,6 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
               </div>
             </button>
           )}
-
           {aiLoading && (
             <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:14,padding:"20px 16px",textAlign:"center"}}>
               <div style={{width:36,height:36,borderRadius:"50%",border:`3px solid ${T.border}`,borderTop:`3px solid ${T.accent}`,animation:"spin 0.8s linear infinite",margin:"0 auto 12px"}} />
@@ -1406,24 +1321,19 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
               <p style={{color:T.muted,fontSize:11,margin:0}}>El estilista está combinando tus prendas</p>
             </div>
           )}
-
           {aiErr && (
             <div style={{background:"rgba(255,77,109,0.08)",border:"1px solid rgba(255,77,109,0.3)",borderRadius:12,padding:"10px 13px",marginBottom:10}}>
               <p style={{color:T.err,fontSize:12,margin:"0 0 8px"}}>{aiErr}</p>
               <Btn onClick={generateAiOutfits} sm full={false} icon="↺">Reintentar</Btn>
             </div>
           )}
-
           {aiResult && (
             <div style={{animation:"rise 0.3s ease"}}>
-              {/* Estilo de la persona */}
               <div style={{background:`linear-gradient(135deg,${T.aLow},rgba(201,240,78,0.05))`,border:`1px solid ${T.accent}`,borderRadius:14,padding:"12px 14px",marginBottom:12}}>
                 <p style={{color:T.accent,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.3px",margin:"0 0 5px"}}>✦ Tu estilo personal</p>
                 <p style={{color:T.text,fontSize:13,lineHeight:1.6,margin:"0 0 10px"}}>{aiResult.estilo_persona}</p>
                 <button onClick={()=>sar(null)} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Generar nuevos ↺</button>
               </div>
-
-              {/* Outfits sugeridos */}
               <p style={{color:T.muted,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:8}}>Outfits sugeridos</p>
               {(aiResult.outfits||[]).map((o,idx)=>{
                 const pieces = garments.filter(g=>o.garmentIds.includes(g.id));
@@ -1459,8 +1369,6 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
             </div>
           )}
         </div>
-
-        {/* ── OUTFITS GUARDADOS ── */}
         {outfits.length>0 && (
           <>
             <p style={{color:T.muted,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:8}}>Tus outfits guardados</p>
@@ -1497,7 +1405,6 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
             })}
           </>
         )}
-
         {outfits.length===0 && !aiResult && !aiLoading && (
           <div style={{textAlign:"center",padding:"30px 0"}}>
             <div style={{fontSize:36,marginBottom:8}}>👔</div>
@@ -1510,7 +1417,7 @@ function OutfitsScreen({ outfits,garments,onNew,onDeleteOutfit,onSaveAiOutfit,ap
 }
 
 /* ─────────────────────────────────────────────────────────────
-   CHAT SCREEN — Asistente del armario
+   CHAT SCREEN
 ───────────────────────────────────────────────────────────── */
 function ChatScreen({ garments,outfits,user,apiKey }) {
   const [msgs,sm]    = useState([]);
@@ -1520,7 +1427,6 @@ function ChatScreen({ garments,outfits,user,apiKey }) {
 
   useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[msgs]);
 
-  // Carga historial del chat guardado en localStorage
   useEffect(()=>{
     if (!user) return;
     try {
@@ -1532,7 +1438,6 @@ function ChatScreen({ garments,outfits,user,apiKey }) {
 
   function saveHistory(newMsgs) {
     if (!user) return;
-    // Guardamos solo los últimos 40 mensajes para no llenar localStorage
     const toSave = newMsgs.slice(-40);
     localStorage.setItem("cai_chat_"+user.id, JSON.stringify(toSave));
   }
@@ -1541,29 +1446,22 @@ function ChatScreen({ garments,outfits,user,apiKey }) {
     const text = input.trim();
     if (!text || loading) return;
     if (!apiKey) { sm(p=>[...p,{role:"assistant",text:"⚠️ Necesitas configurar tu Claude API key en ⚙️ Configuración para usar el chat."}]); return; }
-
     const userMsg = {role:"user",text};
     const newMsgs = [...msgs, userMsg];
     sm(newMsgs); si(""); sl(true);
-
-    // Contexto del armario para Claude
     const wardrobeCtx = garments.length===0
       ? "El armario está vacío."
       : garments.map(g=>`• ${g.name} (${g.category}, ${g.color_principal||g.color||""}, ${g.occasion}, ${(g.seasons||[]).join("/")||"todo año"}, ${g.material||"?"}, marca:${g.brand||"ninguna"})`).join("\n");
-
     const outfitsCtx = outfits.length===0
       ? "No tiene outfits guardados."
       : outfits.map(o=>{
           const pieces = garments.filter(g=>o.garmentIds.includes(g.id)).map(g=>g.name).join(", ");
           return `• "${o.name}" (${o.occasion}): ${pieces}`;
         }).join("\n");
-
-    // Historial de conversación para Claude (últimos 10 mensajes)
     const history = newMsgs.slice(-11,-1).map(m=>({
       role: m.role==="user"?"user":"assistant",
       content: m.text,
     }));
-
     const systemPrompt = `Eres un estilista de moda experto y personal de ${user.name}. Conoces su armario al detalle y das consejos prácticos, creativos y personalizados.
 
 ARMARIO DE ${user.name.toUpperCase()} (${garments.length} prendas):
@@ -1579,7 +1477,6 @@ INSTRUCCIONES:
 - Máximo 3 párrafos por respuesta, sé conciso
 - Puedes usar emojis con moderación
 - Responde siempre en español`;
-
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -1593,10 +1490,7 @@ INSTRUCCIONES:
           model: "claude-sonnet-4-5",
           max_tokens: 600,
           system: systemPrompt,
-          messages: [
-            ...history,
-            { role: "user", content: text },
-          ],
+          messages: [...history, { role: "user", content: text }],
         }),
       });
       const d = await res.json();
@@ -1616,17 +1510,10 @@ INSTRUCCIONES:
     if (user) localStorage.removeItem("cai_chat_"+user.id);
   }
 
-  const QUICK = [
-    "¿Qué me pongo hoy?",
-    "¿Qué me falta en el armario?",
-    "Analiza mi estilo",
-    "Outfit para una cena elegante",
-    "¿Cómo combino mis prendas de colores?",
-  ];
+  const QUICK = ["¿Qué me pongo hoy?","¿Qué me falta en el armario?","Analiza mi estilo","Outfit para una cena elegante","¿Cómo combino mis prendas de colores?"];
 
   return (
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
-      {/* Header */}
       <div style={{padding:"12px 14px 10px",borderBottom:`1px solid ${T.border}`,flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
           <p style={{color:T.text,fontSize:16,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",margin:"0 0 1px"}}>Estilista IA</p>
@@ -1634,21 +1521,16 @@ INSTRUCCIONES:
         </div>
         <button onClick={clearChat} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>Limpiar</button>
       </div>
-
-      {/* Mensajes */}
       <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
-
-        {/* Quick replies si no hay conversación */}
         {msgs.length<=1 && (
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4}}>
             {QUICK.map(q=>(
-              <button key={q} onClick={()=>{si(q);}} style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit",transition:"all 0.15s"}}>
+              <button key={q} onClick={()=>si(q)} style={{background:T.surface,border:`1px solid ${T.border}`,color:T.dim,borderRadius:20,padding:"6px 11px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
                 {q}
               </button>
             ))}
           </div>
         )}
-
         {msgs.map((m,i)=>(
           <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",animation:"risefast 0.2s ease"}}>
             {m.role==="assistant" && (
@@ -1659,7 +1541,6 @@ INSTRUCCIONES:
             </div>
           </div>
         ))}
-
         {loading && (
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <div style={{width:28,height:28,borderRadius:8,background:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>✦</div>
@@ -1670,8 +1551,6 @@ INSTRUCCIONES:
         )}
         <div ref={bottomRef} />
       </div>
-
-      {/* Input */}
       <div style={{padding:"10px 14px 16px",borderTop:`1px solid ${T.border}`,flexShrink:0,display:"flex",gap:8,alignItems:"flex-end",background:T.bg}}>
         <div style={{flex:1,background:T.high,borderRadius:14,padding:"10px 13px",border:`1px solid ${T.border}`}}>
           <textarea value={input} onChange={e=>si(e.target.value)}
@@ -1869,7 +1748,6 @@ export default function App() {
   const [outfitNew,son] = useState(false);
   const [toast,stt] = useState(null);
 
-  /* Restore session on mount */
   useEffect(()=>{
     const session = restoreSession();
     if (session) {
@@ -1881,9 +1759,7 @@ export default function App() {
   },[]);
 
   function showToast(msg,type="ok"){ stt({msg,type}); setTimeout(()=>stt(null),2200); }
-
   function login(u){ su(u); si(DB.getGarments(u.id)); so(DB.getOutfits(u.id)); ss("app"); }
-
   function logout(){ DB.clearSession(); su(null); si([]); so([]); ssel(null); ss("auth"); st("home"); }
 
   function saveGarment(g,keepScreen=false){
@@ -1929,9 +1805,7 @@ export default function App() {
     <div style={{width:"100%",height:"100dvh",background:T.bg,fontFamily:"'Sora',system-ui,sans-serif",position:"relative",overflow:"hidden",paddingTop:"var(--sat)"}}>
       <style>{CSS}</style>
       <div style={{height:"100%",display:"flex",flexDirection:"column",position:"relative"}}>
-
         {screen==="auth" && <AuthScreen onLogin={login} />}
-
         {screen==="apikey" && (
           <ApiKeyScreen
             onSave={saveKey}
@@ -1943,7 +1817,6 @@ export default function App() {
             onSavePhotoRoom={savePhotoRoomKey}
           />
         )}
-
         {screen==="scanner" && (
           <ScannerScreen
             onSave={saveGarment}
@@ -1954,7 +1827,6 @@ export default function App() {
             onNeedKey={()=>ss("apikey")}
           />
         )}
-
         {screen==="detail" && sel && (
           <DetailScreen
             garment={sel}
@@ -1964,7 +1836,6 @@ export default function App() {
             onDelete={deleteGarment}
           />
         )}
-
         {screen==="app" && (
           <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
             <div style={{flex:1,overflow:"hidden",position:"relative"}}>
@@ -1982,7 +1853,6 @@ export default function App() {
             )}
           </div>
         )}
-
         {toast && screen!=="scanner" && <Toast msg={toast.msg} type={toast.type} />}
       </div>
     </div>
