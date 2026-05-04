@@ -339,6 +339,23 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   HUGGING FACE REMBG (gratis, ilimitado)
+───────────────────────────────────────────────────────────── */
+async function removeBackgroundHF(base64) {
+  try {
+    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/remove-bg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: base64 }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.image) return null;
+    return base64ToBlob(data.image, "image/png");
+  } catch (_) { return null; }
+}
+
+/* ─────────────────────────────────────────────────────────────
    PIPELINE PRINCIPAL
    1. Claude detecta prendas + bbox
    2. Recorta cada prenda por su bbox (canvas, sin API)
@@ -368,7 +385,7 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
     croppedBase64 = cropped.base64;
   }
 
-  // PASO 3 — Remove.bg / PhotoRoom (con logs diagnósticos temporales)
+  // PASO 3 — HF (gratis) → Remove.bg → PhotoRoom
   const hasRemoveBg  = effectiveRemoveBgKey  && getApiUsage("removebg").remaining  > 0;
   const hasPhotoRoom = effectivePhotoRoomKey && getApiUsage("photoroom").remaining > 0;
 
@@ -377,12 +394,11 @@ async function buildGarmentImage(fullDataUrl, fullBase64, garment, removeBgKey, 
   console.log("[BG] removebg remaining:", getApiUsage("removebg").remaining);
   console.log("[BG] hasRemoveBg:", hasRemoveBg);
 
-  if (hasRemoveBg || hasPhotoRoom) {
-    let blob = null;
-    if (hasRemoveBg)  blob = await removeBackgroundRemoveBg(croppedBase64, effectiveRemoveBgKey);
-    if (!blob && hasPhotoRoom) blob = await removeBackgroundPhotoRoom(croppedBase64, effectivePhotoRoomKey);
-    if (blob) return await blobToWhiteBg(blob, 600);
-  }
+  let blob = null;
+  blob = await removeBackgroundHF(croppedBase64);
+  if (!blob && hasRemoveBg)  blob = await removeBackgroundRemoveBg(croppedBase64, effectiveRemoveBgKey);
+  if (!blob && hasPhotoRoom) blob = await removeBackgroundPhotoRoom(croppedBase64, effectivePhotoRoomKey);
+  if (blob) return await blobToWhiteBg(blob, 600);
 
   // PASO 4 — Fallback canvas
   if (!isFullImage) return croppedDataUrl;
