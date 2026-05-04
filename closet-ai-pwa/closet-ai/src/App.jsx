@@ -343,15 +343,25 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundHF(base64) {
   try {
-    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/run/predict", {
+    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ data: [base64] }),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data?.data?.[0]) return null;
-    return base64ToBlob(data.data[0], "image/png");
+    const eventId = data?.event_id;
+    if (!eventId) return null;
+
+    // Gradio usa un sistema de dos pasos: primero obtienes event_id, luego el resultado
+    const res2 = await fetch(`https://ceciliafp62002-design-closetai-rembg.hf.space/gradio_api/call/process_image/${eventId}`);
+    if (!res2.ok) return null;
+    const text = await res2.text();
+    const match = text.match(/data:\s*(\[.*\])/);
+    if (!match) return null;
+    const result = JSON.parse(match[1]);
+    if (!result?.[0]) return null;
+    return base64ToBlob(result[0], "image/png");
   } catch (_) { return null; }
 }
 
