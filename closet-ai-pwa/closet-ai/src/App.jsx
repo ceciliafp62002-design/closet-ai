@@ -343,15 +343,15 @@ async function removeBackgroundPhotoRoom(base64, apiKey) {
 ───────────────────────────────────────────────────────────── */
 async function removeBackgroundHF(base64) {
   try {
-    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/remove-bg", {
+    const res = await fetch("https://ceciliafp62002-design-closetai-rembg.hf.space/run/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: base64 }),
+      body: JSON.stringify({ data: [base64] }),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data.image) return null;
-    return base64ToBlob(data.image, "image/png");
+    if (!data?.data?.[0]) return null;
+    return base64ToBlob(data.data[0], "image/png");
   } catch (_) { return null; }
 }
 
